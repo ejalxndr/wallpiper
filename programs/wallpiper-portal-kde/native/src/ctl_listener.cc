@@ -79,6 +79,10 @@ void CtlListener::setCaptureHandler(CaptureHandler handler) {
   m_captureHandler = std::move(handler);
 }
 
+void CtlListener::setRenderNodeProvider(RenderNodeProvider provider) {
+  m_renderNodeProvider = std::move(provider);
+}
+
 void CtlListener::run() {
   const std::string path =
       WallpiperProtocol::ctlSocketPath(m_portalName).toStdString();
@@ -204,6 +208,16 @@ void CtlListener::handleConnection(int clientFd) {
     }
     break;
   }
+  case WallpiperProtocol::CtlRequest::RenderNode:
+    if (m_renderNodeProvider) {
+      if (auto node = m_renderNodeProvider()) {
+        response =
+            WallpiperProtocol::CtlResponseRenderNode{node->first, node->second};
+      } else {
+        response = WallpiperProtocol::CtlResponseErr{"render node unavailable"};
+      }
+    }
+    break;
   }
   writeResponse(response);
 }

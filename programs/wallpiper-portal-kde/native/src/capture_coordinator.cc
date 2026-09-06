@@ -138,6 +138,23 @@ CaptureCoordinator::CaptureCoordinator(QObject *parent)
             Qt::BlockingQueuedConnection);
         return result;
       });
+  m_ctlListener->setRenderNodeProvider(
+      [this]() -> std::optional<std::pair<uint32_t, uint32_t>> {
+        std::optional<std::pair<uint32_t, uint32_t>> result;
+        QMetaObject::invokeMethod(
+            this,
+            [this, &result]() {
+              if (!m_primaryItem) {
+                return;
+              }
+              uint32_t major = 0, minor = 0;
+              if (m_primaryItem->queryRenderNode(&major, &minor)) {
+                result = std::make_pair(major, minor);
+              }
+            },
+            Qt::BlockingQueuedConnection);
+        return result;
+      });
   m_ctlListener->setDetachHandler([this]() {
     QMetaObject::invokeMethod(
         this, [this]() { handleDetach(); }, Qt::BlockingQueuedConnection);

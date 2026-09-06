@@ -60,6 +60,8 @@ public:
   void destroyEglImage(EGLImageKHR image) const;
   bool waitForSyncFd(int syncFd) const;
 
+  bool queryRenderNode(uint32_t *major, uint32_t *minor) const;
+
   QSGTexture *wrapExternalOes(QQuickWindow *window, const Import &import,
                               const QSize &size) const;
   QSGTexture *wrapTexture2D(QQuickWindow *window, unsigned int texture,

@@ -25,6 +25,7 @@
 
 #include "egl_dmabuf_importer.h"
 #include "protocol.h"
+#include "vulkan_dmabuf_importer.h"
 
 #include <QQuickItem>
 #include <QSGTexture>
@@ -90,6 +91,7 @@ public:
   double peakFrameMs() const { return m_peakFrameMs; }
 
   std::optional<WallpiperProtocol::MonitorGeometry> currentGeometry() const;
+  bool queryRenderNode(uint32_t *major, uint32_t *minor) const;
 
 signals:
   void debugEnabledChanged();
@@ -100,8 +102,11 @@ protected:
                            UpdatePaintNodeData *data) override;
 
 private:
+  enum class Backend { None, Egl, Vulkan };
+
   struct SlotTexture {
-    EglDmabufImporter::Import import;
+    std::optional<EglDmabufImporter::Import> eglImport;
+    std::optional<VulkanDmabufImporter::Import> vkImport;
     quint32 width = 0;
     quint32 height = 0;
     quint32 format = 0;
@@ -154,6 +159,8 @@ private:
                          qint64 windowMs);
 
   EglDmabufImporter m_importer;
+  VulkanDmabufImporter m_vkImporter;
+  Backend m_backend = Backend::None;
   BlitProgramState m_blitProgram;
 
   std::unordered_map<quint32, SlotTexture> m_slotTextures;

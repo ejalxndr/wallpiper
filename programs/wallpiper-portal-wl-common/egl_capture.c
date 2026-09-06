@@ -30,6 +30,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
+#include <sys/sysmacros.h>
 #include <unistd.h>
 
 #include <gbm.h>
@@ -253,6 +255,20 @@ static bool ensure_egl_ctx(wp_wl_egl_capture_ctx_t *ctx, char *err,
   }
 
   ctx->ok = true;
+  return true;
+}
+
+bool wp_wl_egl_render_node(uint32_t *out_major, uint32_t *out_minor) {
+  char err[128];
+  if (!ensure_egl_ctx(&g_ctx, err, sizeof(err))) {
+    return false;
+  }
+  struct stat st;
+  if (fstat(g_ctx.drm_fd, &st) != 0) {
+    return false;
+  }
+  *out_major = major(st.st_rdev);
+  *out_minor = minor(st.st_rdev);
   return true;
 }
 

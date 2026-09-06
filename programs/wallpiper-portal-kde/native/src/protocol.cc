@@ -284,6 +284,8 @@ std::optional<CtlRequest> parseCtlRequest(const std::string &line) {
     return CtlRequest::CursorPos;
   if (trimmed == "PING")
     return CtlRequest::Ping;
+  if (trimmed == "RENDER_NODE")
+    return CtlRequest::RenderNode;
   if (trimmed.rfind("CAPTURE ", 0) == 0)
     return CtlRequest::Capture;
   return std::nullopt;
@@ -339,6 +341,8 @@ std::string encodeCtlRequest(CtlRequest request) {
     return "CURSOR_POS\n";
   case CtlRequest::Ping:
     return "PING\n";
+  case CtlRequest::RenderNode:
+    return "RENDER_NODE\n";
   case CtlRequest::Capture:
     return {};
   }
@@ -360,6 +364,10 @@ std::string encodeCtlResponse(const CtlResponse &response) {
   if (const auto *cursor = std::get_if<CtlResponseCursorPos>(&response)) {
     return "CURSOR_POS " + std::to_string(cursor->x) + " " +
            std::to_string(cursor->y) + "\n";
+  }
+  if (const auto *node = std::get_if<CtlResponseRenderNode>(&response)) {
+    return "RENDER_NODE " + std::to_string(node->major) + " " +
+           std::to_string(node->minor) + "\n";
   }
   return {};
 }

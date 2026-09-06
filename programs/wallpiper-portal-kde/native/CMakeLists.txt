@@ -14,6 +14,7 @@ set(CMAKE_MODULE_PATH
 
 find_package(Qt6 6.7 REQUIRED COMPONENTS Core Gui Qml Quick)
 find_package(EGL REQUIRED)
+find_package(Vulkan REQUIRED)
 find_package(X11 REQUIRED COMPONENTS Xrandr)
 
 qt_standard_project_setup(REQUIRES 6.7)
@@ -30,6 +31,7 @@ qt_add_qml_module(wallpiper_capture_plugin
         include/ctl_listener.h
         include/capture_coordinator.h
         include/egl_dmabuf_importer.h
+        include/vulkan_dmabuf_importer.h
         include/capture_item.h
         include/x11_output_lookup.h
 
@@ -38,6 +40,7 @@ qt_add_qml_module(wallpiper_capture_plugin
         src/ctl_listener.cc
         src/capture_coordinator.cc
         src/egl_dmabuf_importer.cc
+        src/vulkan_dmabuf_importer.cc
         src/capture_item.cc
         src/x11_output_lookup.cc
 )
@@ -54,6 +57,7 @@ target_link_libraries(wallpiper_capture_plugin PRIVATE
     Qt6::Qml
     Qt6::Quick
     EGL::EGL
+    Vulkan::Vulkan
     ${X11_LIBRARIES}
     ${X11_Xrandr_LIB}
 )

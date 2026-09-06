@@ -26,6 +26,7 @@
 #include "config.h"
 #include "dwmapi_shim.h"
 #include "fonts.h"
+#include "portal.h"
 #include "process.h"
 #include "vk_layer.h"
 
@@ -283,6 +284,16 @@ void wp_renderer_spawn(void) {
       setenv("VK_ADD_LAYER_PATH", vk_layer_path, 1);
     }
     setenv("VK_INSTANCE_LAYERS", WP_VK_CAPTURE_LAYER_NAME, 1);
+
+    if (!getenv("WALLPIPER_CAPTURE_RENDER_NODE")) {
+      uint32_t render_major, render_minor;
+      if (wp_portal_current_render_node(&render_major, &render_minor)) {
+        char render_node[32];
+        snprintf(render_node, sizeof(render_node), "%u:%u", render_major,
+                 render_minor);
+        setenv("WALLPIPER_CAPTURE_RENDER_NODE", render_node, 1);
+      }
+    }
 
     char portal_name[64];
     char perr[256];

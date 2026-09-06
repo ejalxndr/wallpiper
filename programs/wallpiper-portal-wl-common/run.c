@@ -132,6 +132,16 @@ static void handle_ctl_request(wp_wl_state_t *state, wp_ctl_request_t request) {
   case WP_CTL_REQUEST_PING:
     response.tag = WP_CTL_RESPONSE_OK;
     break;
+  case WP_CTL_REQUEST_RENDER_NODE:
+    if (wp_wl_egl_render_node(&response.render_node_major,
+                              &response.render_node_minor)) {
+      response.tag = WP_CTL_RESPONSE_RENDER_NODE;
+    } else {
+      response.tag = WP_CTL_RESPONSE_ERR;
+      snprintf(response.err, sizeof(response.err), "%s",
+               "render node detection failed");
+    }
+    break;
   case WP_CTL_REQUEST_CAPTURE: {
     uint32_t channel = 0;
     char path[WP_CTL_CAPTURE_PATH_MAX];

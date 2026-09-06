@@ -45,6 +45,7 @@ void wp_portal_spawn(const wp_portal_strategy_t *strategy);
 void wp_portal_spawn_readiness_watcher(const char *name, bool patient);
 void wp_portal_wait_ready(void);
 bool wp_portal_current_monitor(wp_monitor_geometry_t *out);
+bool wp_portal_current_render_node(uint32_t *major, uint32_t *minor);
 bool wp_portal_query_monitor_once(const char *name, wp_monitor_geometry_t *out);
 bool wp_portal_detach_display(void);
 void wp_portal_set_debug_overlay(bool enabled);

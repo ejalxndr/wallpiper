@@ -71,6 +71,9 @@ bool wp_ctl_request_encode(wp_ctl_request_t request, char *out,
   case WP_CTL_REQUEST_PING:
     text = "PING\n";
     break;
+  case WP_CTL_REQUEST_RENDER_NODE:
+    text = "RENDER_NODE\n";
+    break;
   default:
     return false;
   }
@@ -104,6 +107,8 @@ bool wp_ctl_request_parse(const char *line, wp_ctl_request_t *out) {
     *out = WP_CTL_REQUEST_CURSOR_POS;
   } else if (strcmp(buf, "PING") == 0) {
     *out = WP_CTL_REQUEST_PING;
+  } else if (strcmp(buf, "RENDER_NODE") == 0) {
+    *out = WP_CTL_REQUEST_RENDER_NODE;
   } else if (strncmp(buf, "CAPTURE ", 8) == 0) {
     *out = WP_CTL_REQUEST_CAPTURE;
   } else {
@@ -167,6 +172,10 @@ bool wp_ctl_response_encode(const wp_ctl_response_t *response, char *out,
     n = snprintf(out, out_len, "CURSOR_POS %d %d\n", response->cursor_x,
                  response->cursor_y);
     break;
+  case WP_CTL_RESPONSE_RENDER_NODE:
+    n = snprintf(out, out_len, "RENDER_NODE %u %u\n",
+                 response->render_node_major, response->render_node_minor);
+    break;
   default:
     return false;
   }
@@ -212,6 +221,16 @@ bool wp_ctl_response_parse(const char *line, wp_ctl_response_t *out) {
     out->tag = WP_CTL_RESPONSE_CURSOR_POS;
     out->cursor_x = x;
     out->cursor_y = y;
+    return true;
+  }
+  if (strncmp(buf, "RENDER_NODE ", 12) == 0) {
+    unsigned major, minor;
+    if (sscanf(buf + 12, "%u %u", &major, &minor) != 2) {
+      return false;
+    }
+    out->tag = WP_CTL_RESPONSE_RENDER_NODE;
+    out->render_node_major = (uint32_t)major;
+    out->render_node_minor = (uint32_t)minor;
     return true;
   }
   return false;

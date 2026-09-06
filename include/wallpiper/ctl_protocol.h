@@ -37,6 +37,7 @@ typedef enum {
   WP_CTL_REQUEST_CURSOR_POS,
   WP_CTL_REQUEST_PING,
   WP_CTL_REQUEST_CAPTURE,
+  WP_CTL_REQUEST_RENDER_NODE,
 } wp_ctl_request_t;
 
 #define WP_CTL_CAPTURE_PATH_MAX 480
@@ -46,6 +47,7 @@ typedef enum {
   WP_CTL_RESPONSE_ERR,
   WP_CTL_RESPONSE_GEOMETRY,
   WP_CTL_RESPONSE_CURSOR_POS,
+  WP_CTL_RESPONSE_RENDER_NODE,
 } wp_ctl_response_tag_t;
 
 typedef struct {
@@ -54,6 +56,8 @@ typedef struct {
   wp_monitor_geometry_t geometry;
   int32_t cursor_x;
   int32_t cursor_y;
+  uint32_t render_node_major;
+  uint32_t render_node_minor;
 } wp_ctl_response_t;
 
 bool wp_ctl_request_encode(wp_ctl_request_t request, char *out, size_t out_len);

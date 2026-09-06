@@ -26,11 +26,28 @@
 #include "logging.h"
 #include "process.h"
 
+#include <inttypes.h>
 #include <pthread.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
 #include <vulkan/vk_layer.h>
+
+#ifndef VK_EXT_physical_device_drm
+#define VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRM_PROPERTIES_EXT                   \
+  ((VkStructureType)1000353000)
+typedef struct VkPhysicalDeviceDrmPropertiesEXT {
+  VkStructureType sType;
+  void *pNext;
+  VkBool32 hasPrimary;
+  VkBool32 hasRender;
+  int64_t primaryMajor;
+  int64_t primaryMinor;
+  int64_t renderMajor;
+  int64_t renderMinor;
+} VkPhysicalDeviceDrmPropertiesEXT;
+#endif
 
 typedef struct {
   VkStructureType sType;
@@ -102,6 +119,11 @@ static PFN_vkGetPhysicalDeviceMemoryProperties
     g_get_physical_device_memory_properties = NULL;
 static PFN_vkGetPhysicalDeviceFormatProperties2
     g_get_physical_device_format_properties2 = NULL;
+static PFN_vkGetPhysicalDeviceProperties2 g_get_physical_device_properties2 =
+    NULL;
+static PFN_vkGetPhysicalDeviceProperties g_get_physical_device_properties =
+    NULL;
+static PFN_vkEnumeratePhysicalDevices g_next_enumerate_physical_devices = NULL;
 static PFN_wp_vkCreateXlibSurfaceKHR g_next_create_xlib_surface_khr = NULL;
 
 void wp_global_instance_set(VkInstance instance,
@@ -119,8 +141,99 @@ void wp_global_instance_set(VkInstance instance,
   g_get_physical_device_format_properties2 =
       (PFN_vkGetPhysicalDeviceFormatProperties2)next_gipa(
           instance, "vkGetPhysicalDeviceFormatProperties2");
+  g_get_physical_device_properties2 =
+      (PFN_vkGetPhysicalDeviceProperties2)next_gipa(
+          instance, "vkGetPhysicalDeviceProperties2");
+  g_get_physical_device_properties =
+      (PFN_vkGetPhysicalDeviceProperties)next_gipa(
+          instance, "vkGetPhysicalDeviceProperties");
+  g_next_enumerate_physical_devices = (PFN_vkEnumeratePhysicalDevices)next_gipa(
+      instance, "vkEnumeratePhysicalDevices");
   g_next_create_xlib_surface_khr = (PFN_wp_vkCreateXlibSurfaceKHR)next_gipa(
       instance, "vkCreateXlibSurfaceKHR");
+}
+
+/* Parses "major:minor" (e.g. "226:1") */
+static bool parse_preferred_render_node(int64_t *out_major,
+                                        int64_t *out_minor) {
+  const char *env = getenv("WALLPIPER_CAPTURE_RENDER_NODE");
+  if (!env || !env[0]) {
+    return false;
+  }
+  long long major = 0, minor = 0;
+  if (sscanf(env, "%lld:%lld", &major, &minor) != 2) {
+    return false;
+  }
+  *out_major = (int64_t)major;
+  *out_minor = (int64_t)minor;
+  return true;
+}
+
+/* best effort */
+static bool query_render_node(VkPhysicalDevice pd,
+                              VkPhysicalDeviceDrmPropertiesEXT *out) {
+  if (!g_get_physical_device_properties2) {
+    return false;
+  }
+  memset(out, 0, sizeof(*out));
+  out->sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRM_PROPERTIES_EXT;
+  VkPhysicalDeviceProperties2 props2 = {
+      .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2,
+      .pNext = out,
+  };
+  g_get_physical_device_properties2(pd, &props2);
+  return out->hasRender;
+}
+
+static VKAPI_ATTR VkResult VKAPI_CALL
+wp_EnumeratePhysicalDevices(VkInstance instance, uint32_t *pPhysicalDeviceCount,
+                            VkPhysicalDevice *pPhysicalDevices) {
+  if (!g_next_enumerate_physical_devices) {
+    return VK_ERROR_INITIALIZATION_FAILED;
+  }
+  VkResult res = g_next_enumerate_physical_devices(
+      instance, pPhysicalDeviceCount, pPhysicalDevices);
+  if (res != VK_SUCCESS && res != VK_INCOMPLETE) {
+    return res;
+  }
+  if (!pPhysicalDevices || !wp_capture_is_target_process()) {
+    return res;
+  }
+
+  int64_t want_major = 0, want_minor = 0;
+  if (!parse_preferred_render_node(&want_major, &want_minor)) {
+    return res;
+  }
+
+  uint32_t count = *pPhysicalDeviceCount;
+  for (uint32_t i = 0; i < count; i++) {
+    VkPhysicalDeviceDrmPropertiesEXT drm;
+    if (!query_render_node(pPhysicalDevices[i], &drm)) {
+      continue;
+    }
+    if (drm.renderMajor != want_major || drm.renderMinor != want_minor) {
+      continue;
+    }
+    if (i != 0) {
+      VkPhysicalDevice preferred = pPhysicalDevices[i];
+      memmove(&pPhysicalDevices[1], &pPhysicalDevices[0],
+              i * sizeof(VkPhysicalDevice));
+      pPhysicalDevices[0] = preferred;
+      WP_LOG("enumerate_physical_devices: moved render node %lld:%lld "
+             "(index %u -> 0) to match WALLPIPER_CAPTURE_RENDER_NODE",
+             (long long)want_major, (long long)want_minor, i);
+    } else {
+      WP_LOG("enumerate_physical_devices: render node %lld:%lld already at "
+             "index 0",
+             (long long)want_major, (long long)want_minor);
+    }
+    return res;
+  }
+
+  WP_LOG("enumerate_physical_devices: no enumerated device matches "
+         "WALLPIPER_CAPTURE_RENDER_NODE=%lld:%lld, leaving order unchanged",
+         (long long)want_major, (long long)want_minor);
+  return res;
 }
 
 static VKAPI_ATTR VkResult VKAPI_CALL wp_CreateXlibSurfaceKHR(
@@ -203,6 +316,9 @@ VKAPI_ATTR void VKAPI_CALL wp_DestroyInstance(
     g_next_destroy_instance = NULL;
     g_get_physical_device_memory_properties = NULL;
     g_get_physical_device_format_properties2 = NULL;
+    g_get_physical_device_properties2 = NULL;
+    g_get_physical_device_properties = NULL;
+    g_next_enumerate_physical_devices = NULL;
     g_next_create_xlib_surface_khr = NULL;
   }
 }
@@ -275,6 +391,24 @@ VKAPI_ATTR VkResult VKAPI_CALL wp_CreateDevice(
     return res;
   }
 
+  if (wp_capture_is_target_process() && g_get_physical_device_properties) {
+    VkPhysicalDeviceDrmPropertiesEXT drm;
+    bool has_render_node = query_render_node(physicalDevice, &drm);
+    VkPhysicalDeviceProperties props;
+    g_get_physical_device_properties(physicalDevice, &props);
+    if (has_render_node) {
+      WP_LOG("create_device: physical device \"%s\" (vendor=0x%04x "
+             "device=0x%04x) render node=%" PRId64 ":%" PRId64,
+             props.deviceName, props.vendorID, props.deviceID, drm.renderMajor,
+             drm.renderMinor);
+    } else {
+      WP_LOG("create_device: physical device \"%s\" (vendor=0x%04x "
+             "device=0x%04x) render node unavailable "
+             "(no VK_EXT_physical_device_drm)",
+             props.deviceName, props.vendorID, props.deviceID);
+    }
+  }
+
   wp_device_data_t *data =
       wp_device_data_create(*pDevice, physicalDevice, next_gdpa);
   if (!data) {
@@ -310,6 +444,8 @@ vkGetInstanceProcAddr(VkInstance instance, const char *pName) {
       {"vkCreateInstance", (PFN_vkVoidFunction)wp_CreateInstance},
       {"vkDestroyInstance", (PFN_vkVoidFunction)wp_DestroyInstance},
       {"vkCreateDevice", (PFN_vkVoidFunction)wp_CreateDevice},
+      {"vkEnumeratePhysicalDevices",
+       (PFN_vkVoidFunction)wp_EnumeratePhysicalDevices},
       {"vkGetDeviceProcAddr", (PFN_vkVoidFunction)vkGetDeviceProcAddr},
       {"vkCreateXlibSurfaceKHR", (PFN_vkVoidFunction)wp_CreateXlibSurfaceKHR},
   };

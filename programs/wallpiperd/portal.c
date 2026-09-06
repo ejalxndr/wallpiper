@@ -40,6 +40,38 @@ static pthread_mutex_t g_state_mutex = PTHREAD_MUTEX_INITIALIZER;
 static int g_display_pid = -1;
 static bool g_has_monitor = false;
 static wp_monitor_geometry_t g_monitor;
+static bool g_has_render_node = false;
+static bool g_render_node_attempted = false;
+static uint32_t g_render_node_major = 0;
+static uint32_t g_render_node_minor = 0;
+
+#define WP_RENDER_NODE_ATTEMPTS 10
+#define WP_RENDER_NODE_RETRY_MS 150
+
+static void fetch_render_node(const char *name) {
+  for (int attempt = 0; attempt < WP_RENDER_NODE_ATTEMPTS; attempt++) {
+    wp_ctl_response_t node_resp;
+    if (wp_send_ctl_request(name, WP_CTL_REQUEST_RENDER_NODE, &node_resp) &&
+        node_resp.tag == WP_CTL_RESPONSE_RENDER_NODE) {
+      printf("%s portal render node: %u:%u\n", name,
+             node_resp.render_node_major, node_resp.render_node_minor);
+      pthread_mutex_lock(&g_state_mutex);
+      g_render_node_major = node_resp.render_node_major;
+      g_render_node_minor = node_resp.render_node_minor;
+      g_has_render_node = true;
+      g_render_node_attempted = true;
+      pthread_mutex_unlock(&g_state_mutex);
+      return;
+    }
+    struct timespec ts = {.tv_sec = 0,
+                          .tv_nsec = WP_RENDER_NODE_RETRY_MS * 1000000L};
+    nanosleep(&ts, NULL);
+  }
+  printf("%s portal did not report a render node\n", name);
+  pthread_mutex_lock(&g_state_mutex);
+  g_render_node_attempted = true;
+  pthread_mutex_unlock(&g_state_mutex);
+}
 
 void wp_portal_spawn_strategy(const char *name, wp_portal_strategy_t *out) {
   memset(out, 0, sizeof(*out));
@@ -139,6 +171,8 @@ static void *readiness_watcher_thread(void *arg) {
       }
       g_has_monitor = true;
       pthread_mutex_unlock(&g_state_mutex);
+
+      fetch_render_node(name);
       return NULL;
     }
 
@@ -148,6 +182,7 @@ static void *readiness_watcher_thread(void *arg) {
       pthread_mutex_lock(&g_state_mutex);
       g_has_monitor = true;
       pthread_mutex_unlock(&g_state_mutex);
+      fetch_render_node(name);
       return NULL;
     }
 
@@ -176,7 +211,7 @@ void wp_portal_spawn_readiness_watcher(const char *name, bool patient) {
 void wp_portal_wait_ready(void) {
   for (;;) {
     pthread_mutex_lock(&g_state_mutex);
-    bool has = g_has_monitor;
+    bool has = g_has_monitor && g_render_node_attempted;
     pthread_mutex_unlock(&g_state_mutex);
     if (has) {
       return;
@@ -191,6 +226,17 @@ bool wp_portal_current_monitor(wp_monitor_geometry_t *out) {
   bool has = g_has_monitor;
   if (has) {
     *out = g_monitor;
+  }
+  pthread_mutex_unlock(&g_state_mutex);
+  return has;
+}
+
+bool wp_portal_current_render_node(uint32_t *major, uint32_t *minor) {
+  pthread_mutex_lock(&g_state_mutex);
+  bool has = g_has_render_node;
+  if (has) {
+    *major = g_render_node_major;
+    *minor = g_render_node_minor;
   }
   pthread_mutex_unlock(&g_state_mutex);
   return has;

@@ -104,6 +104,7 @@ enum class CtlRequest {
   CursorPos,
   Ping,
   Capture,
+  RenderNode,
 };
 
 std::optional<CtlRequest> parseCtlRequest(const std::string &line);
@@ -128,8 +129,13 @@ struct CtlResponseCursorPos {
   int32_t x = 0;
   int32_t y = 0;
 };
+struct CtlResponseRenderNode {
+  uint32_t major = 0;
+  uint32_t minor = 0;
+};
 
-using CtlResponse = std::variant<CtlResponseOk, CtlResponseErr,
-                                 CtlResponseGeometry, CtlResponseCursorPos>;
+using CtlResponse =
+    std::variant<CtlResponseOk, CtlResponseErr, CtlResponseGeometry,
+                CtlResponseCursorPos, CtlResponseRenderNode>;
 std::string encodeCtlResponse(const CtlResponse &response);
 } // namespace WallpiperProtocol

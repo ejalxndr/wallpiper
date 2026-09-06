@@ -29,6 +29,8 @@
 
 typedef struct wp_wl_state wp_wl_state_t;
 
+bool wp_wl_egl_render_node(uint32_t *out_major, uint32_t *out_minor);
+
 bool wp_wl_egl_capture_readback(wp_wl_state_t *state, uint32_t channel,
                                 uint8_t **out_pixels, int *out_width,
                                 int *out_height, char *err, size_t err_len);
