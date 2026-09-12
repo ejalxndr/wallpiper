@@ -112,6 +112,12 @@ static const char *const REQUIRED_DEVICE_EXTENSIONS[] = {
 #define REQUIRED_DEVICE_EXTENSION_COUNT                                        \
   (sizeof(REQUIRED_DEVICE_EXTENSIONS) / sizeof(REQUIRED_DEVICE_EXTENSIONS[0]))
 
+static const char *const REQUIRED_INSTANCE_EXTENSIONS[] = {
+    "VK_EXT_physical_device_drm",
+};
+#define REQUIRED_INSTANCE_EXTENSION_COUNT                                      \
+  (sizeof(REQUIRED_INSTANCE_EXTENSIONS) / sizeof(REQUIRED_INSTANCE_EXTENSIONS[0]))
+
 static VkInstance g_instance = VK_NULL_HANDLE;
 static PFN_vkGetInstanceProcAddr g_next_gipa = NULL;
 static PFN_vkDestroyInstance g_next_destroy_instance = NULL;
@@ -124,6 +130,8 @@ static PFN_vkGetPhysicalDeviceProperties2 g_get_physical_device_properties2 =
 static PFN_vkGetPhysicalDeviceProperties g_get_physical_device_properties =
     NULL;
 static PFN_vkEnumeratePhysicalDevices g_next_enumerate_physical_devices = NULL;
+static PFN_vkEnumeratePhysicalDeviceGroups
+    g_next_enumerate_physical_device_groups = NULL;
 static PFN_wp_vkCreateXlibSurfaceKHR g_next_create_xlib_surface_khr = NULL;
 
 void wp_global_instance_set(VkInstance instance,
@@ -149,6 +157,15 @@ void wp_global_instance_set(VkInstance instance,
           instance, "vkGetPhysicalDeviceProperties");
   g_next_enumerate_physical_devices = (PFN_vkEnumeratePhysicalDevices)next_gipa(
       instance, "vkEnumeratePhysicalDevices");
+  g_next_enumerate_physical_device_groups =
+      (PFN_vkEnumeratePhysicalDeviceGroups)next_gipa(
+          instance, "vkEnumeratePhysicalDeviceGroups");
+  if (!g_next_enumerate_physical_device_groups) {
+    /* pre-1.1 instances that only enabled VK_KHR_device_group_creation */
+    g_next_enumerate_physical_device_groups =
+        (PFN_vkEnumeratePhysicalDeviceGroups)next_gipa(
+            instance, "vkEnumeratePhysicalDeviceGroupsKHR");
+  }
   g_next_create_xlib_surface_khr = (PFN_wp_vkCreateXlibSurfaceKHR)next_gipa(
       instance, "vkCreateXlibSurfaceKHR");
 }
@@ -206,6 +223,7 @@ wp_EnumeratePhysicalDevices(VkInstance instance, uint32_t *pPhysicalDeviceCount,
   }
 
   uint32_t count = *pPhysicalDeviceCount;
+  bool found_preferred = false;
   for (uint32_t i = 0; i < count; i++) {
     VkPhysicalDeviceDrmPropertiesEXT drm;
     if (!query_render_node(pPhysicalDevices[i], &drm)) {
@@ -214,25 +232,71 @@ wp_EnumeratePhysicalDevices(VkInstance instance, uint32_t *pPhysicalDeviceCount,
     if (drm.renderMajor != want_major || drm.renderMinor != want_minor) {
       continue;
     }
-    if (i != 0) {
-      VkPhysicalDevice preferred = pPhysicalDevices[i];
-      memmove(&pPhysicalDevices[1], &pPhysicalDevices[0],
-              i * sizeof(VkPhysicalDevice));
-      pPhysicalDevices[0] = preferred;
-      WP_LOG("enumerate_physical_devices: moved render node %lld:%lld "
-             "(index %u -> 0) to match WALLPIPER_CAPTURE_RENDER_NODE",
-             (long long)want_major, (long long)want_minor, i);
-    } else {
-      WP_LOG("enumerate_physical_devices: render node %lld:%lld already at "
-             "index 0",
-             (long long)want_major, (long long)want_minor);
-    }
+    pPhysicalDevices[0] = pPhysicalDevices[i];
+    *pPhysicalDeviceCount = 1;
+    found_preferred = true;
+    WP_LOG("enumerate_physical_devices: restricting target process to "
+           "render node %lld:%lld (was index %u)",
+           (long long)want_major, (long long)want_minor, i);
+    break;
+  }
+
+  if (!found_preferred) {
+    WP_LOG("enumerate_physical_devices: no enumerated device matches "
+           "WALLPIPER_CAPTURE_RENDER_NODE=%lld:%lld, leaving order unchanged",
+           (long long)want_major, (long long)want_minor);
+  }
+  return res;
+}
+
+static VKAPI_ATTR VkResult VKAPI_CALL wp_EnumeratePhysicalDeviceGroups(
+    VkInstance instance, uint32_t *pPhysicalDeviceGroupCount,
+    VkPhysicalDeviceGroupProperties *pPhysicalDeviceGroupProperties) {
+  if (!g_next_enumerate_physical_device_groups) {
+    return VK_ERROR_INITIALIZATION_FAILED;
+  }
+  VkResult res = g_next_enumerate_physical_device_groups(
+      instance, pPhysicalDeviceGroupCount, pPhysicalDeviceGroupProperties);
+  if (res != VK_SUCCESS && res != VK_INCOMPLETE) {
+    return res;
+  }
+  if (!pPhysicalDeviceGroupProperties || !wp_capture_is_target_process()) {
     return res;
   }
 
-  WP_LOG("enumerate_physical_devices: no enumerated device matches "
-         "WALLPIPER_CAPTURE_RENDER_NODE=%lld:%lld, leaving order unchanged",
-         (long long)want_major, (long long)want_minor);
+  int64_t want_major = 0, want_minor = 0;
+  if (!parse_preferred_render_node(&want_major, &want_minor)) {
+    return res;
+  }
+
+  uint32_t count = *pPhysicalDeviceGroupCount;
+  bool found_preferred = false;
+  for (uint32_t i = 0; i < count && !found_preferred; i++) {
+    VkPhysicalDeviceGroupProperties *group =
+        &pPhysicalDeviceGroupProperties[i];
+    for (uint32_t d = 0; d < group->physicalDeviceCount; d++) {
+      VkPhysicalDeviceDrmPropertiesEXT drm;
+      if (!query_render_node(group->physicalDevices[d], &drm)) {
+        continue;
+      }
+      if (drm.renderMajor != want_major || drm.renderMinor != want_minor) {
+        continue;
+      }
+      pPhysicalDeviceGroupProperties[0] = *group;
+      *pPhysicalDeviceGroupCount = 1;
+      found_preferred = true;
+      WP_LOG("enumerate_physical_device_groups: restricting target process "
+             "to render node %lld:%lld (was group index %u)",
+             (long long)want_major, (long long)want_minor, i);
+      break;
+    }
+  }
+
+  if (!found_preferred) {
+    WP_LOG("enumerate_physical_device_groups: no group matches "
+           "WALLPIPER_CAPTURE_RENDER_NODE=%lld:%lld, leaving order unchanged",
+           (long long)want_major, (long long)want_minor);
+  }
   return res;
 }
 
@@ -296,7 +360,73 @@ VKAPI_ATTR VkResult VKAPI_CALL wp_CreateInstance(
     return VK_ERROR_INITIALIZATION_FAILED;
   }
 
-  VkResult res = next_create_instance(pCreateInfo, pAllocator, pInstance);
+  VkInstanceCreateInfo modified_info = *pCreateInfo;
+  const char **extension_ptrs = NULL;
+  VkExtensionProperties *available_extensions = NULL;
+
+  if (wp_capture_is_target_process()) {
+    PFN_vkEnumerateInstanceExtensionProperties enumerate_instance_extensions =
+        (PFN_vkEnumerateInstanceExtensionProperties)next_gipa(
+            NULL, "vkEnumerateInstanceExtensionProperties");
+    uint32_t available_count = 0;
+    if (enumerate_instance_extensions &&
+        enumerate_instance_extensions(NULL, &available_count, NULL) ==
+            VK_SUCCESS &&
+        available_count > 0) {
+      available_extensions =
+          malloc(available_count * sizeof(*available_extensions));
+      if (available_extensions &&
+          enumerate_instance_extensions(NULL, &available_count,
+                                        available_extensions) != VK_SUCCESS) {
+        free(available_extensions);
+        available_extensions = NULL;
+        available_count = 0;
+      }
+    }
+
+    if (available_extensions) {
+      size_t base_count = pCreateInfo->enabledExtensionCount;
+      size_t max_count = base_count + REQUIRED_INSTANCE_EXTENSION_COUNT;
+      extension_ptrs = malloc(max_count * sizeof(const char *));
+      if (extension_ptrs) {
+        size_t n = 0;
+        for (size_t i = 0; i < base_count; i++) {
+          extension_ptrs[n++] = pCreateInfo->ppEnabledExtensionNames[i];
+        }
+        for (size_t r = 0; r < REQUIRED_INSTANCE_EXTENSION_COUNT; r++) {
+          bool present = false;
+          for (size_t i = 0; i < base_count; i++) {
+            if (strcmp(pCreateInfo->ppEnabledExtensionNames[i],
+                       REQUIRED_INSTANCE_EXTENSIONS[r]) == 0) {
+              present = true;
+              break;
+            }
+          }
+          if (present) {
+            continue;
+          }
+          bool supported = false;
+          for (uint32_t a = 0; a < available_count; a++) {
+            if (strcmp(available_extensions[a].extensionName,
+                       REQUIRED_INSTANCE_EXTENSIONS[r]) == 0) {
+              supported = true;
+              break;
+            }
+          }
+          if (supported) {
+            extension_ptrs[n++] = REQUIRED_INSTANCE_EXTENSIONS[r];
+          }
+        }
+        modified_info.enabledExtensionCount = (uint32_t)n;
+        modified_info.ppEnabledExtensionNames = extension_ptrs;
+      }
+    }
+  }
+
+  VkResult res =
+      next_create_instance(&modified_info, pAllocator, pInstance);
+  free(extension_ptrs);
+  free(available_extensions);
   if (res != VK_SUCCESS) {
     return res;
   }
@@ -319,6 +449,7 @@ VKAPI_ATTR void VKAPI_CALL wp_DestroyInstance(
     g_get_physical_device_properties2 = NULL;
     g_get_physical_device_properties = NULL;
     g_next_enumerate_physical_devices = NULL;
+    g_next_enumerate_physical_device_groups = NULL;
     g_next_create_xlib_surface_khr = NULL;
   }
 }
@@ -446,6 +577,10 @@ vkGetInstanceProcAddr(VkInstance instance, const char *pName) {
       {"vkCreateDevice", (PFN_vkVoidFunction)wp_CreateDevice},
       {"vkEnumeratePhysicalDevices",
        (PFN_vkVoidFunction)wp_EnumeratePhysicalDevices},
+      {"vkEnumeratePhysicalDeviceGroups",
+       (PFN_vkVoidFunction)wp_EnumeratePhysicalDeviceGroups},
+      {"vkEnumeratePhysicalDeviceGroupsKHR",
+       (PFN_vkVoidFunction)wp_EnumeratePhysicalDeviceGroups},
       {"vkGetDeviceProcAddr", (PFN_vkVoidFunction)vkGetDeviceProcAddr},
       {"vkCreateXlibSurfaceKHR", (PFN_vkVoidFunction)wp_CreateXlibSurfaceKHR},
   };

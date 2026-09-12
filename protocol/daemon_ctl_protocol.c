@@ -110,7 +110,8 @@ bool wp_send_daemon_command(const char *const *args, size_t arg_count,
     return false;
   }
 
-  struct timeval read_tv = {.tv_sec = 5, .tv_usec = 0};
+  bool is_capture = arg_count > 0 && strcmp(args[0], "capture") == 0;
+  struct timeval read_tv = {.tv_sec = is_capture ? 15 : 5, .tv_usec = 0};
   struct timeval write_tv = {.tv_sec = 2, .tv_usec = 0};
   setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &read_tv, sizeof(read_tv));
   setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, &write_tv, sizeof(write_tv));

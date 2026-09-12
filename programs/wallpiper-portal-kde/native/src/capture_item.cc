@@ -39,6 +39,7 @@
 #include <QSGRendererInterface>
 #include <QSGSimpleTextureNode>
 #include <QScreen>
+#include <QVulkanInstance>
 
 #include <algorithm>
 #include <cmath>
@@ -218,6 +219,28 @@ void WallpaperCaptureItem::componentComplete() {
             "VK_KHR_external_semaphore_fd",
         });
         win->setGraphicsConfiguration(config);
+
+        if (!win->vulkanInstance()) {
+          static QVulkanInstance s_vulkanInstance;
+          if (!s_vulkanInstance.isValid()) {
+            QByteArrayList extensions =
+                QQuickGraphicsConfiguration::preferredInstanceExtensions();
+            if (s_vulkanInstance.supportedExtensions().contains(
+                    "VK_EXT_physical_device_drm") &&
+                !extensions.contains("VK_EXT_physical_device_drm")) {
+              extensions.append("VK_EXT_physical_device_drm");
+            }
+            s_vulkanInstance.setExtensions(extensions);
+            if (!s_vulkanInstance.create()) {
+              qWarning() << "[vulkan] failed to create QVulkanInstance with"
+                        << extensions << "- falling back to Qt Quick's "
+                        "default instance";
+            }
+          }
+          if (s_vulkanInstance.isValid()) {
+            win->setVulkanInstance(&s_vulkanInstance);
+          }
+        }
       }
     }
     CaptureCoordinator::instance()->reevaluateActiveItem();
@@ -508,8 +531,6 @@ QSGNode *WallpaperCaptureItem::updatePaintNode(QSGNode *oldNode,
     PendingBuf pending = m_pendingBufs.front();
     m_pendingBufs.pop_front();
 
-    destroySlot(pending.slot);
-
     SlotTexture tex;
     tex.width = pending.width;
     tex.height = pending.height;
@@ -593,6 +614,7 @@ QSGNode *WallpaperCaptureItem::updatePaintNode(QSGNode *oldNode,
       continue;
     }
 
+    destroySlot(pending.slot);
     m_slotTextures.emplace(pending.slot, std::move(tex));
     freshlyImported[pending.slot] = true;
   }
@@ -698,6 +720,7 @@ QSGNode *WallpaperCaptureItem::updatePaintNode(QSGNode *oldNode,
       gl->glReadPixels(0, 0, captureWidth, captureHeight, GL_RGBA,
                        GL_UNSIGNED_BYTE, image.bits());
       gl->glBindFramebuffer(GL_FRAMEBUFFER, static_cast<GLuint>(prevFbo));
+      image = image.flipped(Qt::Vertical);
       ok = true;
     } else {
       captureErr = QStringLiteral("no OpenGL context on render thread");

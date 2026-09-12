@@ -429,10 +429,6 @@ static void handle_buf(wp_i3_state_t *state, uint32_t wire_slot, uint32_t width,
   }
 
   wp_i3_slot_t *slot = &out->slots[local_idx];
-  if (slot->in_use) {
-    xcb_free_pixmap(state->conn, slot->pixmap);
-    slot->in_use = false;
-  }
 
   xcb_pixmap_t pixmap = xcb_generate_id(state->conn);
   xcb_void_cookie_t cookie = xcb_dri3_pixmap_from_buffers_checked(
@@ -443,6 +439,10 @@ static void handle_buf(wp_i3_state_t *state, uint32_t wire_slot, uint32_t width,
     printf("[socket] dri3 pixmap import failed for slot %u\n", wire_slot);
     free(err);
     return;
+  }
+
+  if (slot->in_use) {
+    xcb_free_pixmap(state->conn, slot->pixmap);
   }
 
   slot->in_use = true;
@@ -664,6 +664,7 @@ typedef struct {
   int height;
   char path[WP_CTL_CAPTURE_PATH_MAX];
   wp_ctl_listener_t *listener;
+  uint32_t generation;
 } wp_i3_capture_job_t;
 
 static void *capture_encode_and_reply(void *arg) {
@@ -679,7 +680,7 @@ static void *capture_encode_and_reply(void *arg) {
              "failed to write PNG to %.200s", job->path);
   }
 
-  wp_ctl_listener_reply(job->listener, &response);
+  wp_ctl_listener_reply(job->listener, job->generation, &response);
 
   free(job->pixels);
   free(job);
@@ -688,6 +689,7 @@ static void *capture_encode_and_reply(void *arg) {
 
 static void handle_ctl_request(wp_i3_state_t *state, wp_ctl_request_t request,
                                wp_ctl_listener_t *listener) {
+  uint32_t generation = wp_ctl_listener_pending_generation(listener);
   wp_ctl_response_t response;
   memset(&response, 0, sizeof(response));
 
@@ -744,6 +746,7 @@ static void handle_ctl_request(wp_i3_state_t *state, wp_ctl_request_t request,
     job->height = height;
     snprintf(job->path, sizeof(job->path), "%s", path);
     job->listener = listener;
+    job->generation = generation;
 
     pthread_t thread;
     if (pthread_create(&thread, NULL, capture_encode_and_reply, job) != 0) {
@@ -765,7 +768,7 @@ static void handle_ctl_request(wp_i3_state_t *state, wp_ctl_request_t request,
     break;
   }
 
-  wp_ctl_listener_reply(listener, &response);
+  wp_ctl_listener_reply(listener, generation, &response);
 }
 
 int main(void) {

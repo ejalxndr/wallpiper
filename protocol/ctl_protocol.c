@@ -134,8 +134,10 @@ bool wp_ctl_capture_args_parse(const char *line, uint32_t *channel, char *path,
     rest++;
   }
   char *end = NULL;
+  errno = 0;
   unsigned long parsed_channel = strtoul(rest, &end, 10);
-  if (end == rest || *end != ' ') {
+  if (end == rest || *end != ' ' || errno == ERANGE ||
+      parsed_channel > UINT32_MAX) {
     return false;
   }
   while (*end == ' ' || *end == '\t') {
@@ -145,7 +147,10 @@ bool wp_ctl_capture_args_parse(const char *line, uint32_t *channel, char *path,
     return false;
   }
   *channel = (uint32_t)parsed_channel;
-  snprintf(path, path_len, "%s", end);
+  int path_n = snprintf(path, path_len, "%s", end);
+  if (path_n <= 0 || (size_t)path_n >= path_len) {
+    return false;
+  }
   return true;
 }
 
@@ -378,6 +383,7 @@ struct wp_ctl_listener {
   bool has_pending;
   bool delivered;
   bool has_reply;
+  uint32_t generation;
   wp_ctl_request_t pending_request;
   uint32_t pending_capture_channel;
   char pending_capture_path[WP_CTL_CAPTURE_PATH_MAX];
@@ -442,6 +448,7 @@ static void *ctl_listener_thread_main(void *arg) {
       listener->has_pending = true;
       listener->delivered = false;
       listener->has_reply = false;
+      listener->generation++;
       pthread_cond_broadcast(&listener->cond);
 
       struct timespec deadline;
@@ -572,11 +579,20 @@ void wp_ctl_listener_get_capture_args(wp_ctl_listener_t *listener,
   pthread_mutex_unlock(&listener->mutex);
 }
 
-void wp_ctl_listener_reply(wp_ctl_listener_t *listener,
+uint32_t wp_ctl_listener_pending_generation(wp_ctl_listener_t *listener) {
+  pthread_mutex_lock(&listener->mutex);
+  uint32_t generation = listener->generation;
+  pthread_mutex_unlock(&listener->mutex);
+  return generation;
+}
+
+void wp_ctl_listener_reply(wp_ctl_listener_t *listener, uint32_t generation,
                            const wp_ctl_response_t *response) {
   pthread_mutex_lock(&listener->mutex);
-  listener->pending_reply = *response;
-  listener->has_reply = true;
-  pthread_cond_broadcast(&listener->cond);
+  if (listener->has_pending && listener->generation == generation) {
+    listener->pending_reply = *response;
+    listener->has_reply = true;
+    pthread_cond_broadcast(&listener->cond);
+  }
   pthread_mutex_unlock(&listener->mutex);
 }

@@ -186,7 +186,7 @@ static bool pid_list_contains(const wp_pid_list_t *list, int pid) {
 
 static bool discover_new_renderer_pid(const wp_pid_list_t *pre_spawn,
                                       int *out_pid) {
-  for (int attempt = 0; attempt < 20; attempt++) {
+  for (int attempt = 0; attempt < 100; attempt++) {
     wp_pid_list_t current;
     wp_find_renderer_pids(&current);
     for (size_t i = 0; i < current.count; i++) {

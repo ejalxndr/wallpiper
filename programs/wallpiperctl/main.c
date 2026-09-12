@@ -137,7 +137,8 @@ static void print_usage(void) {
           "\n"
           "daemon commands (require a running wallpiperd):\n"
           "  debug-on | debug-off\n"
-          "  capture <monitor; int; 0-indexed> <path>\n"
+          "  capture <channel; int; 0-indexed, not necessarily a monitor "
+          "index> <path>\n"
           "\n"
           "wallpaper engine commands:\n"
           "  pause | play   | stop\n"
@@ -175,7 +176,7 @@ int main(int argc, char **argv) {
   } else if (strcmp(cmd, "capture") == 0) {
     if (argc < 4) {
       snprintf(err, sizeof(err),
-               "usage: wallpiperctl capture <monitor> <path>");
+               "usage: wallpiperctl capture <channel> <path>");
       ok = false;
     } else {
       char abs_path[1024];

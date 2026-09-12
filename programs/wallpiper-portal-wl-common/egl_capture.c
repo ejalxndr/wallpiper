@@ -372,6 +372,20 @@ bool wp_wl_egl_capture_readback(wp_wl_state_t *state, uint32_t channel,
       snprintf(err, err_len, "%s", "out of memory");
     } else {
       glReadPixels(0, 0, width, height, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+
+      const size_t row_bytes = (size_t)width * 4;
+      uint8_t *row_buf = malloc(row_bytes);
+      if (row_buf) {
+        for (int y = 0; y < height / 2; y++) {
+          uint8_t *top = pixels + (size_t)y * row_bytes;
+          uint8_t *bottom = pixels + (size_t)(height - 1 - y) * row_bytes;
+          memcpy(row_buf, top, row_bytes);
+          memcpy(top, bottom, row_bytes);
+          memcpy(bottom, row_buf, row_bytes);
+        }
+        free(row_buf);
+      }
+
       *out_pixels = pixels;
       *out_width = width;
       *out_height = height;

@@ -90,13 +90,24 @@ static gboolean on_ctl_socket_connectable(gint fd, GIOCondition condition,
   if (client_fd < 0)
     return G_SOURCE_CONTINUE;
 
-  char buf[256];
-  ssize_t n = recv(client_fd, buf, sizeof(buf) - 1, 0);
-  if (n <= 0) {
+  char buf[512];
+  size_t total = 0;
+  while (total + 1 < sizeof(buf)) {
+    char c;
+    ssize_t n = recv(client_fd, &c, 1, 0);
+    if (n <= 0) {
+      break;
+    }
+    buf[total++] = c;
+    if (c == '\n') {
+      break;
+    }
+  }
+  buf[total] = '\0';
+  if (total == 0) {
     close(client_fd);
     return G_SOURCE_CONTINUE;
   }
-  buf[n] = '\0';
 
   const gchar *line = g_strstrip(buf);
   g_message("wallpiper-gnome: ctl request: %s", line);
@@ -155,9 +166,14 @@ static gboolean on_ctl_socket_connectable(gint fd, GIOCondition condition,
     response = g_strdup("OK\n");
   } else if (g_str_has_prefix(line, "CAPTURE ")) {
     gchar **parts = g_strsplit(line + strlen("CAPTURE "), " ", 2);
-    guint32 channel =
-        parts[0] ? (guint32)g_ascii_strtoull(parts[0], NULL, 10) : 0;
-    const gchar *path = parts[0] && parts[1] ? parts[1] : NULL;
+    gchar *channel_end = NULL;
+    guint64 parsed_channel =
+        parts[0] ? g_ascii_strtoull(parts[0], &channel_end, 10) : 0;
+    gboolean channel_valid = parts[0] && channel_end != parts[0] &&
+                             *channel_end == '\0' &&
+                             parsed_channel <= G_MAXUINT32;
+    guint32 channel = channel_valid ? (guint32)parsed_channel : 0;
+    const gchar *path = channel_valid && parts[1] ? parts[1] : NULL;
     if (!path) {
       response = g_strdup("ERR malformed capture request\n");
       g_strfreev(parts);

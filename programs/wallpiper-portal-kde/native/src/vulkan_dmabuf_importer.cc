@@ -269,8 +269,6 @@ bool VulkanDmabufImporter::createShadowImage(uint32_t width, uint32_t height,
   imageInfo.usage =
       VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
   imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-  imageInfo.queueFamilyIndexCount = 1;
-  imageInfo.pQueueFamilyIndices = &m_queueFamilyIndex;
   imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
 
   VkImage image = VK_NULL_HANDLE;
@@ -372,8 +370,6 @@ VulkanDmabufImporter::importDmabuf(int width, int height, uint32_t stride,
   imageInfo.tiling = VK_IMAGE_TILING_DRM_FORMAT_MODIFIER_EXT;
   imageInfo.usage = VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
   imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-  imageInfo.queueFamilyIndexCount = 1;
-  imageInfo.pQueueFamilyIndices = &m_queueFamilyIndex;
   imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
 
   VkImage importedImage = VK_NULL_HANDLE;
@@ -422,6 +418,11 @@ VulkanDmabufImporter::importDmabuf(int width, int height, uint32_t stride,
       continue;
     }
 
+    int attemptFd = ::dup(fd);
+    if (attemptFd < 0) {
+      continue;
+    }
+
     VkMemoryDedicatedAllocateInfo dedicatedInfo{};
     dedicatedInfo.sType = VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO;
     dedicatedInfo.image = importedImage;
@@ -430,7 +431,7 @@ VulkanDmabufImporter::importDmabuf(int width, int height, uint32_t stride,
     importInfo.sType = VK_STRUCTURE_TYPE_IMPORT_MEMORY_FD_INFO_KHR;
     importInfo.pNext = &dedicatedInfo;
     importInfo.handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT;
-    importInfo.fd = fd;
+    importInfo.fd = attemptFd;
 
     VkMemoryAllocateInfo allocInfo{};
     allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
@@ -443,14 +444,16 @@ VulkanDmabufImporter::importDmabuf(int width, int height, uint32_t stride,
       consumedFd = true;
       break;
     }
+    ::close(attemptFd);
   }
+
+  ::close(fd);
 
   if (!consumedFd) {
     qWarning() << "[vulkan] vkAllocateMemory exhausted every candidate "
                   "memory type for the imported dmabuf (mask"
                << Qt::hex << candidateMask << Qt::dec << ")";
     m_vkDestroyImage(m_device, importedImage, nullptr);
-    ::close(fd);
     return std::nullopt;
   }
 

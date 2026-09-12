@@ -94,5 +94,6 @@ bool wp_ctl_listener_poll(wp_ctl_listener_t *listener,
 void wp_ctl_listener_get_capture_args(wp_ctl_listener_t *listener,
                                       uint32_t *out_channel, char *out_path,
                                       size_t out_path_len);
-void wp_ctl_listener_reply(wp_ctl_listener_t *listener,
+uint32_t wp_ctl_listener_pending_generation(wp_ctl_listener_t *listener);
+void wp_ctl_listener_reply(wp_ctl_listener_t *listener, uint32_t generation,
                            const wp_ctl_response_t *response);
