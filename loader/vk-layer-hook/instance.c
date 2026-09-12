@@ -206,6 +206,7 @@ wp_EnumeratePhysicalDevices(VkInstance instance, uint32_t *pPhysicalDeviceCount,
   }
 
   uint32_t count = *pPhysicalDeviceCount;
+  bool found_preferred = false;
   for (uint32_t i = 0; i < count; i++) {
     VkPhysicalDeviceDrmPropertiesEXT drm;
     if (!query_render_node(pPhysicalDevices[i], &drm)) {
@@ -214,25 +215,20 @@ wp_EnumeratePhysicalDevices(VkInstance instance, uint32_t *pPhysicalDeviceCount,
     if (drm.renderMajor != want_major || drm.renderMinor != want_minor) {
       continue;
     }
-    if (i != 0) {
-      VkPhysicalDevice preferred = pPhysicalDevices[i];
-      memmove(&pPhysicalDevices[1], &pPhysicalDevices[0],
-              i * sizeof(VkPhysicalDevice));
-      pPhysicalDevices[0] = preferred;
-      WP_LOG("enumerate_physical_devices: moved render node %lld:%lld "
-             "(index %u -> 0) to match WALLPIPER_CAPTURE_RENDER_NODE",
-             (long long)want_major, (long long)want_minor, i);
-    } else {
-      WP_LOG("enumerate_physical_devices: render node %lld:%lld already at "
-             "index 0",
-             (long long)want_major, (long long)want_minor);
-    }
-    return res;
+    pPhysicalDevices[0] = pPhysicalDevices[i];
+    *pPhysicalDeviceCount = 1;
+    found_preferred = true;
+    WP_LOG("enumerate_physical_devices: restricting target process to "
+           "render node %lld:%lld (was index %u)",
+           (long long)want_major, (long long)want_minor, i);
+    break;
   }
 
-  WP_LOG("enumerate_physical_devices: no enumerated device matches "
-         "WALLPIPER_CAPTURE_RENDER_NODE=%lld:%lld, leaving order unchanged",
-         (long long)want_major, (long long)want_minor);
+  if (!found_preferred) {
+    WP_LOG("enumerate_physical_devices: no enumerated device matches "
+           "WALLPIPER_CAPTURE_RENDER_NODE=%lld:%lld, leaving order unchanged",
+           (long long)want_major, (long long)want_minor);
+  }
   return res;
 }
 
