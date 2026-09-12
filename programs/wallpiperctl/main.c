@@ -176,7 +176,7 @@ int main(int argc, char **argv) {
   } else if (strcmp(cmd, "capture") == 0) {
     if (argc < 4) {
       snprintf(err, sizeof(err),
-               "usage: wallpiperctl capture <monitor> <path>");
+               "usage: wallpiperctl capture <channel> <path>");
       ok = false;
     } else {
       char abs_path[1024];

@@ -166,9 +166,14 @@ static gboolean on_ctl_socket_connectable(gint fd, GIOCondition condition,
     response = g_strdup("OK\n");
   } else if (g_str_has_prefix(line, "CAPTURE ")) {
     gchar **parts = g_strsplit(line + strlen("CAPTURE "), " ", 2);
-    guint32 channel =
-        parts[0] ? (guint32)g_ascii_strtoull(parts[0], NULL, 10) : 0;
-    const gchar *path = parts[0] && parts[1] ? parts[1] : NULL;
+    gchar *channel_end = NULL;
+    guint64 parsed_channel =
+        parts[0] ? g_ascii_strtoull(parts[0], &channel_end, 10) : 0;
+    gboolean channel_valid = parts[0] && channel_end != parts[0] &&
+                             *channel_end == '\0' &&
+                             parsed_channel <= G_MAXUINT32;
+    guint32 channel = channel_valid ? (guint32)parsed_channel : 0;
+    const gchar *path = channel_valid && parts[1] ? parts[1] : NULL;
     if (!path) {
       response = g_strdup("ERR malformed capture request\n");
       g_strfreev(parts);

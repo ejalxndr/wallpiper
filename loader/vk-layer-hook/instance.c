@@ -130,6 +130,8 @@ static PFN_vkGetPhysicalDeviceProperties2 g_get_physical_device_properties2 =
 static PFN_vkGetPhysicalDeviceProperties g_get_physical_device_properties =
     NULL;
 static PFN_vkEnumeratePhysicalDevices g_next_enumerate_physical_devices = NULL;
+static PFN_vkEnumeratePhysicalDeviceGroups
+    g_next_enumerate_physical_device_groups = NULL;
 static PFN_wp_vkCreateXlibSurfaceKHR g_next_create_xlib_surface_khr = NULL;
 
 void wp_global_instance_set(VkInstance instance,
@@ -155,6 +157,15 @@ void wp_global_instance_set(VkInstance instance,
           instance, "vkGetPhysicalDeviceProperties");
   g_next_enumerate_physical_devices = (PFN_vkEnumeratePhysicalDevices)next_gipa(
       instance, "vkEnumeratePhysicalDevices");
+  g_next_enumerate_physical_device_groups =
+      (PFN_vkEnumeratePhysicalDeviceGroups)next_gipa(
+          instance, "vkEnumeratePhysicalDeviceGroups");
+  if (!g_next_enumerate_physical_device_groups) {
+    /* pre-1.1 instances that only enabled VK_KHR_device_group_creation */
+    g_next_enumerate_physical_device_groups =
+        (PFN_vkEnumeratePhysicalDeviceGroups)next_gipa(
+            instance, "vkEnumeratePhysicalDeviceGroupsKHR");
+  }
   g_next_create_xlib_surface_khr = (PFN_wp_vkCreateXlibSurfaceKHR)next_gipa(
       instance, "vkCreateXlibSurfaceKHR");
 }
@@ -232,6 +243,57 @@ wp_EnumeratePhysicalDevices(VkInstance instance, uint32_t *pPhysicalDeviceCount,
 
   if (!found_preferred) {
     WP_LOG("enumerate_physical_devices: no enumerated device matches "
+           "WALLPIPER_CAPTURE_RENDER_NODE=%lld:%lld, leaving order unchanged",
+           (long long)want_major, (long long)want_minor);
+  }
+  return res;
+}
+
+static VKAPI_ATTR VkResult VKAPI_CALL wp_EnumeratePhysicalDeviceGroups(
+    VkInstance instance, uint32_t *pPhysicalDeviceGroupCount,
+    VkPhysicalDeviceGroupProperties *pPhysicalDeviceGroupProperties) {
+  if (!g_next_enumerate_physical_device_groups) {
+    return VK_ERROR_INITIALIZATION_FAILED;
+  }
+  VkResult res = g_next_enumerate_physical_device_groups(
+      instance, pPhysicalDeviceGroupCount, pPhysicalDeviceGroupProperties);
+  if (res != VK_SUCCESS && res != VK_INCOMPLETE) {
+    return res;
+  }
+  if (!pPhysicalDeviceGroupProperties || !wp_capture_is_target_process()) {
+    return res;
+  }
+
+  int64_t want_major = 0, want_minor = 0;
+  if (!parse_preferred_render_node(&want_major, &want_minor)) {
+    return res;
+  }
+
+  uint32_t count = *pPhysicalDeviceGroupCount;
+  bool found_preferred = false;
+  for (uint32_t i = 0; i < count && !found_preferred; i++) {
+    VkPhysicalDeviceGroupProperties *group =
+        &pPhysicalDeviceGroupProperties[i];
+    for (uint32_t d = 0; d < group->physicalDeviceCount; d++) {
+      VkPhysicalDeviceDrmPropertiesEXT drm;
+      if (!query_render_node(group->physicalDevices[d], &drm)) {
+        continue;
+      }
+      if (drm.renderMajor != want_major || drm.renderMinor != want_minor) {
+        continue;
+      }
+      pPhysicalDeviceGroupProperties[0] = *group;
+      *pPhysicalDeviceGroupCount = 1;
+      found_preferred = true;
+      WP_LOG("enumerate_physical_device_groups: restricting target process "
+             "to render node %lld:%lld (was group index %u)",
+             (long long)want_major, (long long)want_minor, i);
+      break;
+    }
+  }
+
+  if (!found_preferred) {
+    WP_LOG("enumerate_physical_device_groups: no group matches "
            "WALLPIPER_CAPTURE_RENDER_NODE=%lld:%lld, leaving order unchanged",
            (long long)want_major, (long long)want_minor);
   }
@@ -387,6 +449,7 @@ VKAPI_ATTR void VKAPI_CALL wp_DestroyInstance(
     g_get_physical_device_properties2 = NULL;
     g_get_physical_device_properties = NULL;
     g_next_enumerate_physical_devices = NULL;
+    g_next_enumerate_physical_device_groups = NULL;
     g_next_create_xlib_surface_khr = NULL;
   }
 }
@@ -514,6 +577,10 @@ vkGetInstanceProcAddr(VkInstance instance, const char *pName) {
       {"vkCreateDevice", (PFN_vkVoidFunction)wp_CreateDevice},
       {"vkEnumeratePhysicalDevices",
        (PFN_vkVoidFunction)wp_EnumeratePhysicalDevices},
+      {"vkEnumeratePhysicalDeviceGroups",
+       (PFN_vkVoidFunction)wp_EnumeratePhysicalDeviceGroups},
+      {"vkEnumeratePhysicalDeviceGroupsKHR",
+       (PFN_vkVoidFunction)wp_EnumeratePhysicalDeviceGroups},
       {"vkGetDeviceProcAddr", (PFN_vkVoidFunction)vkGetDeviceProcAddr},
       {"vkCreateXlibSurfaceKHR", (PFN_vkVoidFunction)wp_CreateXlibSurfaceKHR},
   };

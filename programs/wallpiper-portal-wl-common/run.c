@@ -78,6 +78,7 @@ typedef struct {
   int height;
   char path[WP_CTL_CAPTURE_PATH_MAX];
   wp_ctl_listener_t *listener;
+  uint32_t generation;
 } wp_wl_capture_job_t;
 
 static void *wp_wl_capture_encode_and_reply(void *arg) {
@@ -93,7 +94,7 @@ static void *wp_wl_capture_encode_and_reply(void *arg) {
              "failed to write PNG to %.200s", job->path);
   }
 
-  wp_ctl_listener_reply(job->listener, &response);
+  wp_ctl_listener_reply(job->listener, job->generation, &response);
 
   free(job->pixels);
   free(job);
@@ -101,6 +102,7 @@ static void *wp_wl_capture_encode_and_reply(void *arg) {
 }
 
 static void handle_ctl_request(wp_wl_state_t *state, wp_ctl_request_t request) {
+  uint32_t generation = wp_ctl_listener_pending_generation(state->ctl_listener);
   wp_ctl_response_t response;
   memset(&response, 0, sizeof(response));
 
@@ -168,6 +170,7 @@ static void handle_ctl_request(wp_wl_state_t *state, wp_ctl_request_t request) {
     job->height = height;
     snprintf(job->path, sizeof(job->path), "%s", path);
     job->listener = state->ctl_listener;
+    job->generation = generation;
 
     pthread_t thread;
     if (pthread_create(&thread, NULL, wp_wl_capture_encode_and_reply, job) !=
@@ -188,7 +191,7 @@ static void handle_ctl_request(wp_wl_state_t *state, wp_ctl_request_t request) {
     break;
   }
 
-  wp_ctl_listener_reply(state->ctl_listener, &response);
+  wp_ctl_listener_reply(state->ctl_listener, generation, &response);
 }
 
 void wp_wl_portal_run(const wp_wl_portal_config_t *config) {
