@@ -30,6 +30,7 @@
 #include "tray.h"
 #include "util.h"
 #include "waitobj.h"
+#include "window_visibility.h"
 
 HWND g_fake_empty_workerw;
 HWND g_fake_icon_workerw;
@@ -125,4 +126,5 @@ void install_progman_hook(void) {
   install_wait_hooks();
   install_spawn_hooks();
   install_cursor_hooks();
+  install_window_visibility_hooks();
 }

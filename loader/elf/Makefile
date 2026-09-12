@@ -32,8 +32,7 @@ SO := $(TARGET_DIR)/libwallpiper-preload.so
 SRCS := \
 	cursor_forward.c \
 	fonts.c \
-	guardian.c \
-	x11.c
+	guardian.c
 
 OBJS := $(addprefix $(OBJ_DIR)/,$(SRCS:.c=.o))
 
