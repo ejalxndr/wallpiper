@@ -116,8 +116,9 @@ static bool wp_force_linear_modifier(void) {
 static uint32_t compute_candidate_modifiers(wp_device_data_t *dd,
                                             VkFormat format, uint64_t *out,
                                             uint32_t max_out) {
-  VkFormatFeatureFlags required =
-      VK_FORMAT_FEATURE_TRANSFER_DST_BIT | VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT;
+  VkFormatFeatureFlags required = VK_FORMAT_FEATURE_TRANSFER_DST_BIT |
+                                  VK_FORMAT_FEATURE_TRANSFER_SRC_BIT |
+                                  VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT;
 
   VkDrmFormatModifierPropertiesListEXT modifier_list = {
       .sType = VK_STRUCTURE_TYPE_DRM_FORMAT_MODIFIER_PROPERTIES_LIST_EXT,

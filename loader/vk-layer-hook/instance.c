@@ -112,6 +112,12 @@ static const char *const REQUIRED_DEVICE_EXTENSIONS[] = {
 #define REQUIRED_DEVICE_EXTENSION_COUNT                                        \
   (sizeof(REQUIRED_DEVICE_EXTENSIONS) / sizeof(REQUIRED_DEVICE_EXTENSIONS[0]))
 
+static const char *const REQUIRED_INSTANCE_EXTENSIONS[] = {
+    "VK_EXT_physical_device_drm",
+};
+#define REQUIRED_INSTANCE_EXTENSION_COUNT                                      \
+  (sizeof(REQUIRED_INSTANCE_EXTENSIONS) / sizeof(REQUIRED_INSTANCE_EXTENSIONS[0]))
+
 static VkInstance g_instance = VK_NULL_HANDLE;
 static PFN_vkGetInstanceProcAddr g_next_gipa = NULL;
 static PFN_vkDestroyInstance g_next_destroy_instance = NULL;
@@ -292,7 +298,73 @@ VKAPI_ATTR VkResult VKAPI_CALL wp_CreateInstance(
     return VK_ERROR_INITIALIZATION_FAILED;
   }
 
-  VkResult res = next_create_instance(pCreateInfo, pAllocator, pInstance);
+  VkInstanceCreateInfo modified_info = *pCreateInfo;
+  const char **extension_ptrs = NULL;
+  VkExtensionProperties *available_extensions = NULL;
+
+  if (wp_capture_is_target_process()) {
+    PFN_vkEnumerateInstanceExtensionProperties enumerate_instance_extensions =
+        (PFN_vkEnumerateInstanceExtensionProperties)next_gipa(
+            NULL, "vkEnumerateInstanceExtensionProperties");
+    uint32_t available_count = 0;
+    if (enumerate_instance_extensions &&
+        enumerate_instance_extensions(NULL, &available_count, NULL) ==
+            VK_SUCCESS &&
+        available_count > 0) {
+      available_extensions =
+          malloc(available_count * sizeof(*available_extensions));
+      if (available_extensions &&
+          enumerate_instance_extensions(NULL, &available_count,
+                                        available_extensions) != VK_SUCCESS) {
+        free(available_extensions);
+        available_extensions = NULL;
+        available_count = 0;
+      }
+    }
+
+    if (available_extensions) {
+      size_t base_count = pCreateInfo->enabledExtensionCount;
+      size_t max_count = base_count + REQUIRED_INSTANCE_EXTENSION_COUNT;
+      extension_ptrs = malloc(max_count * sizeof(const char *));
+      if (extension_ptrs) {
+        size_t n = 0;
+        for (size_t i = 0; i < base_count; i++) {
+          extension_ptrs[n++] = pCreateInfo->ppEnabledExtensionNames[i];
+        }
+        for (size_t r = 0; r < REQUIRED_INSTANCE_EXTENSION_COUNT; r++) {
+          bool present = false;
+          for (size_t i = 0; i < base_count; i++) {
+            if (strcmp(pCreateInfo->ppEnabledExtensionNames[i],
+                       REQUIRED_INSTANCE_EXTENSIONS[r]) == 0) {
+              present = true;
+              break;
+            }
+          }
+          if (present) {
+            continue;
+          }
+          bool supported = false;
+          for (uint32_t a = 0; a < available_count; a++) {
+            if (strcmp(available_extensions[a].extensionName,
+                       REQUIRED_INSTANCE_EXTENSIONS[r]) == 0) {
+              supported = true;
+              break;
+            }
+          }
+          if (supported) {
+            extension_ptrs[n++] = REQUIRED_INSTANCE_EXTENSIONS[r];
+          }
+        }
+        modified_info.enabledExtensionCount = (uint32_t)n;
+        modified_info.ppEnabledExtensionNames = extension_ptrs;
+      }
+    }
+  }
+
+  VkResult res =
+      next_create_instance(&modified_info, pAllocator, pInstance);
+  free(extension_ptrs);
+  free(available_extensions);
   if (res != VK_SUCCESS) {
     return res;
   }

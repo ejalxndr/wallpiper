@@ -164,17 +164,17 @@ static bool try_register_buf(wp_wl_state_t *state, uint32_t channel,
   }
 
   wp_wl_slot_t *slot = &out->slots[local_idx];
-  if (slot->in_use) {
-    wl_buffer_destroy(slot->buffer);
-    close(slot->fd);
-    slot->in_use = false;
-  }
 
   struct wl_buffer *buffer = wp_wl_create_dmabuf_buffer(
       state, fd, width, height, format, stride, modifier);
   if (!buffer) {
     close(fd);
     return true;
+  }
+
+  if (slot->in_use) {
+    wl_buffer_destroy(slot->buffer);
+    close(slot->fd);
   }
 
   slot->in_use = true;

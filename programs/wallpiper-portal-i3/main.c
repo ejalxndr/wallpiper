@@ -429,10 +429,6 @@ static void handle_buf(wp_i3_state_t *state, uint32_t wire_slot, uint32_t width,
   }
 
   wp_i3_slot_t *slot = &out->slots[local_idx];
-  if (slot->in_use) {
-    xcb_free_pixmap(state->conn, slot->pixmap);
-    slot->in_use = false;
-  }
 
   xcb_pixmap_t pixmap = xcb_generate_id(state->conn);
   xcb_void_cookie_t cookie = xcb_dri3_pixmap_from_buffers_checked(
@@ -443,6 +439,10 @@ static void handle_buf(wp_i3_state_t *state, uint32_t wire_slot, uint32_t width,
     printf("[socket] dri3 pixmap import failed for slot %u\n", wire_slot);
     free(err);
     return;
+  }
+
+  if (slot->in_use) {
+    xcb_free_pixmap(state->conn, slot->pixmap);
   }
 
   slot->in_use = true;

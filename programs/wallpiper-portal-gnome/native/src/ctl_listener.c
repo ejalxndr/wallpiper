@@ -90,13 +90,24 @@ static gboolean on_ctl_socket_connectable(gint fd, GIOCondition condition,
   if (client_fd < 0)
     return G_SOURCE_CONTINUE;
 
-  char buf[256];
-  ssize_t n = recv(client_fd, buf, sizeof(buf) - 1, 0);
-  if (n <= 0) {
+  char buf[512];
+  size_t total = 0;
+  while (total + 1 < sizeof(buf)) {
+    char c;
+    ssize_t n = recv(client_fd, &c, 1, 0);
+    if (n <= 0) {
+      break;
+    }
+    buf[total++] = c;
+    if (c == '\n') {
+      break;
+    }
+  }
+  buf[total] = '\0';
+  if (total == 0) {
     close(client_fd);
     return G_SOURCE_CONTINUE;
   }
-  buf[n] = '\0';
 
   const gchar *line = g_strstrip(buf);
   g_message("wallpiper-gnome: ctl request: %s", line);

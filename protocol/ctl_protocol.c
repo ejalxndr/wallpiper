@@ -134,8 +134,10 @@ bool wp_ctl_capture_args_parse(const char *line, uint32_t *channel, char *path,
     rest++;
   }
   char *end = NULL;
+  errno = 0;
   unsigned long parsed_channel = strtoul(rest, &end, 10);
-  if (end == rest || *end != ' ') {
+  if (end == rest || *end != ' ' || errno == ERANGE ||
+      parsed_channel > UINT32_MAX) {
     return false;
   }
   while (*end == ' ' || *end == '\t') {

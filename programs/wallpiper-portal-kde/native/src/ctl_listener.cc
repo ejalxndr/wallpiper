@@ -107,16 +107,19 @@ void CtlListener::run() {
 }
 
 void CtlListener::handleConnection(int clientFd) {
+  constexpr size_t kMaxLine = 512;
   std::string line;
   char ch = '\0';
+  bool overflowed = false;
   while (::read(clientFd, &ch, 1) == 1) {
     if (ch == '\n') {
       break;
     }
-    line.push_back(ch);
-    if (line.size() > 256) {
-      break;
+    if (line.size() >= kMaxLine) {
+      overflowed = true;
+      continue;
     }
+    line.push_back(ch);
   }
   if (line.empty()) {
     return;
@@ -135,6 +138,11 @@ void CtlListener::handleConnection(int clientFd) {
       written += static_cast<size_t>(n);
     }
   };
+
+  if (overflowed) {
+    writeResponse(WallpiperProtocol::CtlResponseErr{"request line too long"});
+    return;
+  }
 
   auto request = WallpiperProtocol::parseCtlRequest(line);
   if (!request) {
