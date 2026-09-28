@@ -61,6 +61,8 @@ jobs:
     steps:
       - name: Setup pacman
         run: |
+          pacman-key --init
+          pacman-key --populate archlinux
           pacman -Syu --noconfirm
           pacman -S --noconfirm git
 
