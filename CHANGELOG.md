@@ -1,3 +1,18 @@
+# [2.1.0](https://github.com/ejalxndr/wallpiper/compare/v2.0.1...v2.1.0) (2026-09-13)
+
+
+### Bug Fixes
+
+* **kde:** retry unbound capture channels instead of dropping them forever ([0ec562d](https://github.com/ejalxndr/wallpiper/commit/0ec562dbcb5baa0d6ed1364bf4f72bc619d6a8a2))
+* **portals:** resolve real VkFormat instead of hardcoding DRM XRGB8888 for dmabuf import ([02bbaf4](https://github.com/ejalxndr/wallpiper/commit/02bbaf4410c98c4a46ea53a49218bb707778f642))
+* **wl-common:** retry unbound capture channels every loop tick, not just once ([14fd4f1](https://github.com/ejalxndr/wallpiper/commit/14fd4f1969f56de015eeecd0d0d2dd27c08ad857))
+
+
+### Features
+
+* add support for PROTON_ENABLE_WAYLAND=1 ([38c4c6c](https://github.com/ejalxndr/wallpiper/commit/38c4c6cdec0da52c211c6be8b514024725b39c30))
+* Add wallpaper capture API: `wallpiperctl capture <monitor; int; 0-indexed> <path>` ([a2dc9b4](https://github.com/ejalxndr/wallpiper/commit/a2dc9b42eb3ce4326aab2745ad91c4b06b830046))
+
 ## [2.0.1](https://github.com/shdwmtr/wallpiper/compare/v2.0.0...v2.0.1) (2026-08-29)
 
 
