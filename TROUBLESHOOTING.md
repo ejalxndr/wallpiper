@@ -15,7 +15,13 @@ For instance:
 
 Likely an issue with your underling translation layer. Only GE-Proton-11 and Valve-Proton-11 have been tested working. 
 
-All users experiencing this issue fixed it upgrading to a later version of Proton. 
+All users experiencing this issue fixed it upgrading to a later version of Proton.  
+
+## Position or Rotation Data of monitors is not accurately reflected
+
+<img width="477" height="197" alt="image" src="https://github.com/user-attachments/assets/a3622567-0d59-450a-a736-e32bc7315455" />
+
+By default, Wallpaper Engine utilizes the device path to identify the position and rotation data of monitors. Setting your monitor identification method to "Shell API" under Settings - General - Windows from within Wallpaper Engine may improve identification.
 
 ## GStreamer-WARNING: libbz2.so.1.0: No such file or directory (Fedora)
 
