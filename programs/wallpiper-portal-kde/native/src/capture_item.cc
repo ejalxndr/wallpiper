@@ -61,13 +61,14 @@ bool ensureBlitProgram(QOpenGLExtraFunctions *gl, BlitProgramState &state,
     return false;
   }
   if (!state.ready) {
-    const char *vsSrc = "attribute vec2 pos;\n"
+	      const char *vsSrc = "attribute vec2 pos;\n"
                         "varying vec2 uv;\n"
                         "void main() {\n"
                         "  uv = pos * 0.5 + 0.5;\n"
                         "  gl_Position = vec4(pos, 0.0, 1.0);\n"
                         "}\n";
-    const char *fsSrc = "#ifdef GL_ES\n"
+
+	          const char *fsSrc = "#ifdef GL_ES\n"
                         "precision mediump float;\n"
                         "#endif\n"
                         "uniform sampler2D tex;\n"
