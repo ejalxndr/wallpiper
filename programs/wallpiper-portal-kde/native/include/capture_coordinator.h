@@ -34,12 +34,14 @@
 #include <unordered_set>
 #include <vector>
 
+QT_FORWARD_DECLARE_CLASS(QScreen)
 QT_FORWARD_DECLARE_CLASS(QTimer)
 
 namespace WallpiperKde {
 
 class CaptureSocket;
 class CtlListener;
+class NativeWindowWatcher;
 class WallpaperCaptureItem;
 
 class CaptureCoordinator : public QObject {
@@ -51,6 +53,10 @@ public:
   void unregisterItem(WallpaperCaptureItem *item);
   void reevaluateActiveItem();
   bool captureChannel(uint32_t channel, const QString &path, QString &err);
+  std::optional<uint32_t> channelForScreen(const QScreen *screen) const;
+
+  void setWallpaperCursor(int32_t x, int32_t y);
+  void clearWallpaperCursor();
 
 private:
   explicit CaptureCoordinator(QObject *parent = nullptr);
@@ -105,8 +111,10 @@ private:
 
   QTimer *m_cursorTimer = nullptr;
   QTimer *m_pendingRetryTimer = nullptr;
+  NativeWindowWatcher *m_nativeWindowWatcher = nullptr;
   std::atomic<int32_t> m_cursorX{0};
   std::atomic<int32_t> m_cursorY{0};
+  std::atomic<bool> m_wallpaperCursorActive{false};
 };
 
 } // namespace WallpiperKde

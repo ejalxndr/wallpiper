@@ -30,6 +30,7 @@
 #include <QDateTime>
 #include <QDebug>
 #include <QGuiApplication>
+#include <QHoverEvent>
 #include <QImage>
 #include <QOpenGLContext>
 #include <QOpenGLExtraFunctions>
@@ -180,6 +181,26 @@ bool blitExternalOesToTexture2D(QOpenGLExtraFunctions *gl,
 WallpaperCaptureItem::WallpaperCaptureItem(QQuickItem *parent)
     : QQuickItem(parent) {
   setFlag(ItemHasContents, true);
+  setAcceptHoverEvents(true);
+}
+
+void WallpaperCaptureItem::hoverMoveEvent(QHoverEvent *event) {
+  const QPointF fromEvent = event->globalPosition();
+  const QPointF fromItem = mapToGlobal(event->position());
+  static quint32 logCounter = 0;
+  if (++logCounter % 32u == 0u) {
+    qInfo() << "[cursor] wallpaper hover" << fromEvent
+            << "(mapped" << fromItem << ")";
+  }
+  CaptureCoordinator::instance()->setWallpaperCursor(
+      static_cast<int32_t>(fromEvent.x()),
+      static_cast<int32_t>(fromEvent.y()));
+  QQuickItem::hoverMoveEvent(event);
+}
+
+void WallpaperCaptureItem::hoverLeaveEvent(QHoverEvent *event) {
+  CaptureCoordinator::instance()->clearWallpaperCursor();
+  QQuickItem::hoverLeaveEvent(event);
 }
 
 WallpaperCaptureItem::~WallpaperCaptureItem() {

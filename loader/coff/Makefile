@@ -42,6 +42,7 @@ SRCS := \
 	tray.c \
 	ipc_triggers.c \
 	cursor.c \
+	native_window.c \
 	dwm_exports.c \
 	waitobj.c \
 	spawn.c \
