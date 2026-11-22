@@ -76,6 +76,7 @@ private:
     int32_t width;
     int32_t height;
     uint32_t flags;
+    uint32_t channel;
   };
 
   void bindWindowManager();

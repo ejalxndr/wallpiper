@@ -53,6 +53,10 @@ typedef struct WpNativeWindowScreen {
 } WpNativeWindowScreen;
 
 typedef struct WpNativeWindowState {
+  /* First two fields keep the legacy 8-byte, channel-indexed payload so an
+   * older shim reading only those bytes still sees sane masks. */
+  unsigned int legacy_fullscreen_mask;
+  unsigned int legacy_maximized_mask;
   unsigned int magic;
   unsigned int count;
   WpNativeWindowScreen screens[WP_NATIVE_WINDOW_STATE_MAX_SCREENS];

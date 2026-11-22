@@ -212,7 +212,11 @@ void NativeWindowWatcher::watchWindow(KWayland::Client::PlasmaWindow *window) {
 }
 
 void NativeWindowWatcher::evaluate() {
-  QHash<const QScreen *, uint32_t> flagsByScreen;
+  struct ScreenStateBuilder {
+    uint32_t flags = 0;
+    uint32_t channel = 0;
+  };
+  QHash<const QScreen *, ScreenStateBuilder> statesByScreen;
 
   const QList<QScreen *> screens = QGuiApplication::screens();
   for (KWayland::Client::PlasmaWindow *window : m_windows) {
@@ -250,25 +254,30 @@ void NativeWindowWatcher::evaluate() {
         continue;
       }
       // Only screens with a bound capture channel are managed by wallpiper.
-      if (!m_coordinator || !m_coordinator->channelForScreen(screen)) {
+      const std::optional<uint32_t> channel =
+          m_coordinator ? m_coordinator->channelForScreen(screen)
+                        : std::nullopt;
+      if (!channel || *channel >= 32) {
         continue;
       }
-      uint32_t &flags = flagsByScreen[screen];
+      ScreenStateBuilder &entry = statesByScreen[screen];
+      entry.channel = *channel;
       if (fullscreen) {
-        flags |= WP_NATIVE_WINDOW_FLAG_FULLSCREEN;
+        entry.flags |= WP_NATIVE_WINDOW_FLAG_FULLSCREEN;
       }
       if (maximized) {
-        flags |= WP_NATIVE_WINDOW_FLAG_MAXIMIZED;
+        entry.flags |= WP_NATIVE_WINDOW_FLAG_MAXIMIZED;
       }
     }
   }
 
   QVector<ScreenState> states;
-  states.reserve(flagsByScreen.size());
-  for (auto it = flagsByScreen.cbegin(); it != flagsByScreen.cend(); ++it) {
+  states.reserve(statesByScreen.size());
+  for (auto it = statesByScreen.cbegin(); it != statesByScreen.cend(); ++it) {
     const QRect geometry = it.key()->geometry();
     states.push_back(ScreenState{geometry.x(), geometry.y(), geometry.width(),
-                                 geometry.height(), it.value()});
+                                 geometry.height(), it.value().flags,
+                                 it.value().channel});
   }
   writeState(states);
 }
@@ -289,6 +298,16 @@ void NativeWindowWatcher::writeState(const QVector<ScreenState> &states) {
     payload.screens[i].width = states[static_cast<int>(i)].width;
     payload.screens[i].height = states[static_cast<int>(i)].height;
     payload.screens[i].flags = states[static_cast<int>(i)].flags;
+
+    const uint32_t channel = states[static_cast<int>(i)].channel;
+    if (channel < 32) {
+      if (payload.screens[i].flags & WP_NATIVE_WINDOW_FLAG_FULLSCREEN) {
+        payload.legacy_fullscreen_mask |= uint32_t{1} << channel;
+      }
+      if (payload.screens[i].flags & WP_NATIVE_WINDOW_FLAG_MAXIMIZED) {
+        payload.legacy_maximized_mask |= uint32_t{1} << channel;
+      }
+    }
   }
 
   const QByteArray bytes(reinterpret_cast<const char *>(&payload),
