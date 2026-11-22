@@ -25,7 +25,7 @@ TCC_SRC := $(abspath ../../x86_64-pc-windows-tcc)
 TCC_BUILD_DIR := ../../build/tcc
 TCC_BIN := $(TCC_BUILD_DIR)/x86_64-win32-tcc
 LIBSNARE_DIR := ../../libs/libsnare
-override CFLAGS := -std=gnu11 -Wall -Wextra -shared -nostdlib -ffreestanding -fno-builtin -isystem $(TCC_SRC)/include -I . -I $(LIBSNARE_DIR)
+override CFLAGS := -std=gnu11 -Wall -Wextra -shared -nostdlib -ffreestanding -fno-builtin -isystem $(TCC_SRC)/include -I . -I ../../include -I $(LIBSNARE_DIR)
 
 TARGET_DIR := ../../build/release
 DLL := $(TARGET_DIR)/dwmapi.dll

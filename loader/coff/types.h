@@ -109,6 +109,7 @@ struct HBRUSH__ {
   int unused;
 };
 typedef struct HBRUSH__ *HBRUSH;
+typedef HANDLE HMONITOR;
 struct HDC__ {
   int unused;
 };

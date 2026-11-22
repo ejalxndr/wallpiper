@@ -24,6 +24,7 @@
 #include "native_window_watcher.h"
 
 #include "capture_coordinator.h"
+#include "wallpiper/native_window_state.h"
 
 #include <KWayland/Client/connection_thread.h>
 #include <KWayland/Client/event_queue.h>
@@ -33,6 +34,7 @@
 #include <QDir>
 #include <QFile>
 #include <QGuiApplication>
+#include <QHash>
 #include <QScreen>
 #include <QSet>
 #include <QTimer>
@@ -84,12 +86,6 @@ bool coversRect(const QRect &window, const QRect &target) {
   return overlapArea * 100 >= targetArea * kCoveragePercent;
 }
 
-void setChannelBit(uint32_t &mask, uint32_t channel) {
-  if (channel < 32) {
-    mask |= (uint32_t{1} << channel);
-  }
-}
-
 } // namespace
 
 NativeWindowWatcher::NativeWindowWatcher(CaptureCoordinator *coordinator,
@@ -111,8 +107,7 @@ NativeWindowWatcher::NativeWindowWatcher(CaptureCoordinator *coordinator,
 
   m_pollTimer = new QTimer(this);
   m_pollTimer->setInterval(kPollIntervalMs);
-  connect(m_pollTimer, &QTimer::timeout, this,
-          &NativeWindowWatcher::evaluate);
+  connect(m_pollTimer, &QTimer::timeout, this, &NativeWindowWatcher::evaluate);
 
   QMetaObject::invokeMethod(this, &NativeWindowWatcher::start,
                             Qt::QueuedConnection);
@@ -141,12 +136,11 @@ void NativeWindowWatcher::start() {
           this, [this] {
             m_windows.clear();
             m_windowManager = nullptr;
-            writeMasks(0, 0);
+            writeState({});
             qWarning() << "[native-window] Wayland connection died";
           });
-  connect(m_connection, &KWayland::Client::ConnectionThread::failed, this, [] {
-    qWarning() << "[native-window] failed to connect to Wayland";
-  });
+  connect(m_connection, &KWayland::Client::ConnectionThread::failed, this,
+          [] { qWarning() << "[native-window] failed to connect to Wayland"; });
 
   m_connection->initConnection();
 }
@@ -159,41 +153,40 @@ void NativeWindowWatcher::bindWindowManager() {
   m_registry->create(m_connection);
   m_registry->setup();
 
-  connect(m_registry,
-          &KWayland::Client::Registry::plasmaWindowManagementAnnounced, this,
-          [this](quint32 name, quint32 version) {
-            if (m_windowManager) {
-              return;
-            }
-            m_windowManager = m_registry->createPlasmaWindowManagement(
-                name, version, m_registry);
-            if (!m_windowManager) {
-              qWarning() << "[native-window] could not bind Plasma window "
-                            "management";
-              return;
-            }
+  connect(
+      m_registry, &KWayland::Client::Registry::plasmaWindowManagementAnnounced,
+      this, [this](quint32 name, quint32 version) {
+        if (m_windowManager) {
+          return;
+        }
+        m_windowManager =
+            m_registry->createPlasmaWindowManagement(name, version, m_registry);
+        if (!m_windowManager) {
+          qWarning() << "[native-window] could not bind Plasma window "
+                        "management";
+          return;
+        }
 
-            connect(m_windowManager, &QObject::destroyed, this,
-                    [this] { m_windowManager = nullptr; });
-            connect(m_windowManager,
-                    &KWayland::Client::PlasmaWindowManagement::windowCreated,
-                    this, &NativeWindowWatcher::watchWindow);
+        connect(m_windowManager, &QObject::destroyed, this,
+                [this] { m_windowManager = nullptr; });
+        connect(m_windowManager,
+                &KWayland::Client::PlasmaWindowManagement::windowCreated, this,
+                &NativeWindowWatcher::watchWindow);
 
-            const QList<KWayland::Client::PlasmaWindow *> windows =
-                m_windowManager->windows();
-            for (KWayland::Client::PlasmaWindow *window : windows) {
-              watchWindow(window);
-            }
+        const QList<KWayland::Client::PlasmaWindow *> windows =
+            m_windowManager->windows();
+        for (KWayland::Client::PlasmaWindow *window : windows) {
+          watchWindow(window);
+        }
 
-            m_pollTimer->start();
-            qInfo() << "[native-window] watching" << windows.size()
-                    << "existing windows";
-            evaluate();
-          });
+        m_pollTimer->start();
+        qInfo() << "[native-window] watching" << windows.size()
+                << "existing windows";
+        evaluate();
+      });
 }
 
-void NativeWindowWatcher::watchWindow(
-    KWayland::Client::PlasmaWindow *window) {
+void NativeWindowWatcher::watchWindow(KWayland::Client::PlasmaWindow *window) {
   if (!window || m_windows.contains(window)) {
     return;
   }
@@ -219,8 +212,7 @@ void NativeWindowWatcher::watchWindow(
 }
 
 void NativeWindowWatcher::evaluate() {
-  uint32_t fullscreenMask = 0;
-  uint32_t maximizedMask = 0;
+  QHash<const QScreen *, uint32_t> flagsByScreen;
 
   const QList<QScreen *> screens = QGuiApplication::screens();
   for (KWayland::Client::PlasmaWindow *window : m_windows) {
@@ -252,50 +244,68 @@ void NativeWindowWatcher::evaluate() {
     }
 
     for (QScreen *screen : screens) {
-      const QRect target = fullscreen ? screen->geometry()
-                                      : screen->availableGeometry();
+      const QRect target =
+          fullscreen ? screen->geometry() : screen->availableGeometry();
       if (!coversRect(windowRect, target)) {
         continue;
       }
-      const std::optional<uint32_t> channel =
-          m_coordinator->channelForScreen(screen);
-      if (!channel) {
+      // Only screens with a bound capture channel are managed by wallpiper.
+      if (!m_coordinator || !m_coordinator->channelForScreen(screen)) {
         continue;
       }
+      uint32_t &flags = flagsByScreen[screen];
       if (fullscreen) {
-        setChannelBit(fullscreenMask, *channel);
+        flags |= WP_NATIVE_WINDOW_FLAG_FULLSCREEN;
       }
       if (maximized) {
-        setChannelBit(maximizedMask, *channel);
+        flags |= WP_NATIVE_WINDOW_FLAG_MAXIMIZED;
       }
     }
   }
 
-  writeMasks(fullscreenMask, maximizedMask);
+  QVector<ScreenState> states;
+  states.reserve(flagsByScreen.size());
+  for (auto it = flagsByScreen.cbegin(); it != flagsByScreen.cend(); ++it) {
+    const QRect geometry = it.key()->geometry();
+    states.push_back(ScreenState{geometry.x(), geometry.y(), geometry.width(),
+                                 geometry.height(), it.value()});
+  }
+  writeState(states);
 }
 
-void NativeWindowWatcher::writeMasks(uint32_t fullscreenMask,
-                                     uint32_t maximizedMask) {
-  if (m_haveWritten && fullscreenMask == m_lastFullscreenMask &&
-      maximizedMask == m_lastMaximizedMask) {
-    return;
+void NativeWindowWatcher::writeState(const QVector<ScreenState> &states) {
+  static_assert(sizeof(int32_t) == sizeof(int),
+                "state file layout requires 32-bit int");
+
+  WpNativeWindowState payload;
+  std::memset(&payload, 0, sizeof(payload));
+  payload.magic = WP_NATIVE_WINDOW_STATE_MAGIC;
+  payload.count =
+      std::min(static_cast<uint32_t>(states.size()),
+               static_cast<uint32_t>(WP_NATIVE_WINDOW_STATE_MAX_SCREENS));
+  for (uint32_t i = 0; i < payload.count; ++i) {
+    payload.screens[i].x = states[static_cast<int>(i)].x;
+    payload.screens[i].y = states[static_cast<int>(i)].y;
+    payload.screens[i].width = states[static_cast<int>(i)].width;
+    payload.screens[i].height = states[static_cast<int>(i)].height;
+    payload.screens[i].flags = states[static_cast<int>(i)].flags;
   }
 
-  unsigned char payload[8];
-  std::memcpy(payload, &fullscreenMask, sizeof(fullscreenMask));
-  std::memcpy(payload + sizeof(fullscreenMask), &maximizedMask,
-              sizeof(maximizedMask));
+  const QByteArray bytes(reinterpret_cast<const char *>(&payload),
+                         sizeof(payload));
+  if (m_haveWritten && bytes == m_lastPayload) {
+    return;
+  }
 
   /*
    * Write the fixed-size payload directly instead of publishing through
    * rename(2).  The Wine shim keeps this path open while polling it, and on
    * this Plasma/XWayland setup rename over the live file fails with EPERM.
-   * An 8-byte single write is enough here: the reader discards short reads.
+   * A single write of the whole struct is enough: the reader discards shorts.
    */
   QFile out(m_statePath);
   if (!out.open(QIODevice::WriteOnly | QIODevice::Truncate) ||
-      out.write(reinterpret_cast<const char *>(payload), sizeof(payload)) !=
-          static_cast<qint64>(sizeof(payload))) {
+      out.write(bytes) != bytes.size()) {
     if (!m_stateWriteWarningLogged) {
       m_stateWriteWarningLogged = true;
       qWarning() << "[native-window] cannot write" << m_statePath
@@ -305,11 +315,10 @@ void NativeWindowWatcher::writeMasks(uint32_t fullscreenMask,
   }
   out.close();
 
-  m_lastFullscreenMask = fullscreenMask;
-  m_lastMaximizedMask = maximizedMask;
+  m_lastPayload = bytes;
   m_haveWritten = true;
-  qInfo() << "[native-window] masks fs=" << fullscreenMask
-          << "max=" << maximizedMask;
+  qInfo() << "[native-window] published" << payload.count
+          << "screen states:" << bytes.toHex();
 }
 
 } // namespace WallpiperKde

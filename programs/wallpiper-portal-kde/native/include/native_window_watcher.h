@@ -23,9 +23,11 @@
 
 #pragma once
 
+#include <QByteArray>
 #include <QObject>
 #include <QSet>
 #include <QString>
+#include <QVector>
 
 #include <cstdint>
 
@@ -47,10 +49,14 @@ class CaptureCoordinator;
 
 /*
  * Watches native Plasma windows through KWin's Plasma window-management
- * protocol and publishes per-capture-channel fullscreen/maximized masks into
- * the wallpiper temp directory.  The COFF shim loaded into wallpaper64.exe
- * ORs these masks into Wallpaper Engine's own window-state masks, which makes
- * WE's existing per-monitor pause settings work for native Wayland windows.
+ * protocol and publishes the affected screen rects into the wallpiper temp
+ * directory.  The COFF shim loaded into wallpaper64.exe maps those rects to
+ * Wallpaper Engine's own monitor indices with EnumDisplayMonitors and ORs the
+ * resulting masks into WE's window-state masks, which makes WE's existing
+ * per-monitor pause settings work for native Wayland windows.
+ *
+ * Screen rects are used instead of capture channels because channel numbering
+ * follows WE's swapchain creation order, which is not stable across launches.
  */
 class NativeWindowWatcher : public QObject {
   Q_OBJECT
@@ -64,9 +70,17 @@ private slots:
   void evaluate();
 
 private:
+  struct ScreenState {
+    int32_t x;
+    int32_t y;
+    int32_t width;
+    int32_t height;
+    uint32_t flags;
+  };
+
   void bindWindowManager();
   void watchWindow(KWayland::Client::PlasmaWindow *window);
-  void writeMasks(uint32_t fullscreenMask, uint32_t maximizedMask);
+  void writeState(const QVector<ScreenState> &states);
 
   CaptureCoordinator *m_coordinator = nullptr;
   KWayland::Client::ConnectionThread *m_connection = nullptr;
@@ -77,8 +91,7 @@ private:
   QTimer *m_settleTimer = nullptr;
   QTimer *m_pollTimer = nullptr;
   QString m_statePath;
-  uint32_t m_lastFullscreenMask = 0;
-  uint32_t m_lastMaximizedMask = 0;
+  QByteArray m_lastPayload;
   bool m_haveWritten = false;
   bool m_stateWriteWarningLogged = false;
   bool m_started = false;
