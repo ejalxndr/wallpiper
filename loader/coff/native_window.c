@@ -70,11 +70,17 @@
 #define RVA_FOCUS_MASK 0x4e5300u
 #define RVA_MAXIMIZED_MASK 0x4e5304u
 #define RVA_FULLSCREEN_MASK 0x4e5308u
-#define RVA_SYSTEM_FLAGS 0x4e52e4u
 #define RVA_AUDIO_ACTIVITY 0x4e6198u
 #define RVA_AUDIO_DETECT 0x138b80u
+#define RVA_SLEEP_STATE 0x4e52e0u
+#define RVA_SLEEP_HANDLER 0x6ed90u
+#define RVA_SYSTEM_FLAGS 0x4e52e4u
+#define RVA_INTERNAL_FLAGS 0x4df540u
+#define RVA_MAIN_HWND 0x4e5280u
+#define RVA_WALLPAPER_RESTORE 0x1d360u
 
 #define SYSTEM_FLAG_SCREEN_OFF 0x20u
+#define INTERNAL_FLAG_WALLPAPERS_RESTORED 0x2u
 
 static const unsigned char kDetectPrologue[8] = {
     0x40, 0x56,            /* push rsi */
@@ -96,8 +102,33 @@ static const unsigned char kAudioDetectPrologue[9] = {
     0x41, 0x57                    /* push r15 */
 };
 
+/*
+ * WE's native sleep handler.  It sets the sleep flag in the system flags and,
+ * crucially, performs the action chosen by `playbacksleep` (pause/stop).  The
+ * periodic playback evaluator only reads the flag for timer-resolution
+ * changes, so setting the bit alone does not stop wallpapers.
+ */
+static const unsigned char kSleepHandlerPrologue[8] = {
+    0x84, 0xd2,             /* test dl, dl */
+    0x74, 0x28,             /* je +0x28 */
+    0x8b, 0x05, 0x32, 0x66 /* mov eax, [rip+...] */
+};
+
+/*
+ * After the sleep handler is called with active=false, WE's native caller also
+ * restarts its wallpaper timers.  Without this the wallpapers stay destroyed
+ * (frozen) after the screen wakes.
+ */
+static const unsigned char kRestorePrologue[10] = {
+    0x40, 0x53,             /* push rbx */
+    0x48, 0x83, 0xec, 0x20, /* sub rsp, 0x20 */
+    0xba, 0x6f, 0x00, 0x00  /* mov edx, 0x6f */
+};
+
 typedef void(WINAPI *detect_callback_t)(void *state);
 typedef unsigned char(WINAPI *audio_detect_t)(void *state, void *device);
+typedef void(WINAPI *sleep_handler_t)(void *state, unsigned char active);
+typedef void(WINAPI *wallpaper_restore_t)(void *hwnd);
 typedef UINT_PTR(WINAPI *set_timer_t)(HWND, UINT_PTR, UINT, void *);
 
 /*
@@ -111,6 +142,8 @@ typedef UINT_PTR(WINAPI *set_timer_t)(HWND, UINT_PTR, UINT, void *);
 
 static detect_callback_t real_detect_callback;
 static audio_detect_t real_audio_detect;
+static sleep_handler_t g_sleep_handler;
+static wallpaper_restore_t g_wallpaper_restore;
 static set_timer_t real_set_timer;
 static snare_inline_t g_set_timer_hook;
 static snare_inline_t g_audio_detect_hook;
@@ -124,7 +157,10 @@ static unsigned int *g_fullscreen_addr;
 static unsigned int *g_maximized_addr;
 static unsigned int *g_focus_addr;
 static unsigned int *g_system_flags_addr;
+static unsigned int *g_internal_flags_addr;
+static void **g_main_hwnd_addr;
 static unsigned char *g_audio_activity_addr;
+static void *g_sleep_state;
 
 /* Only the hook thread touches these transition guards. */
 static unsigned int g_prev_audio_active;
@@ -346,13 +382,39 @@ static void inject_native_playback_state(void) {
   g_prev_audio_active = audio;
 
   unsigned int screen_off = g_screen_off;
-  if (screen_off && g_system_flags_addr) {
-    *g_system_flags_addr |= SYSTEM_FLAG_SCREEN_OFF;
-  } else if (g_prev_screen_off && g_system_flags_addr) {
-    /* Only clear a transition we previously injected. */
-    *g_system_flags_addr &= ~SYSTEM_FLAG_SCREEN_OFF;
+  if (g_sleep_handler && screen_off != g_prev_screen_off) {
+    unsigned int flags = g_system_flags_addr ? *g_system_flags_addr : 0;
+    unsigned int has_flag = (flags & SYSTEM_FLAG_SCREEN_OFF) != 0;
+    if (screen_off != has_flag) {
+      /*
+       * Call WE's own handler, not just its flag: with playbacksleep=stop the
+       * handler is what destroys the wallpaper instances.  Its other argument
+       * is the settings object the native callers pass at 0x1404e52e0.  The
+       * flag check avoids applying the same transition twice if WE's native
+       * power detection already ran.
+       */
+      g_sleep_handler(g_sleep_state, (unsigned char)screen_off);
+
+      /*
+       * On wake the native caller also restarts WE's wallpaper timers; the
+       * sleep handler only clears the flag.  Skipping this leaves the
+       * wallpapers destroyed/frozen even though WE is no longer "asleep".
+       */
+      if (!screen_off && g_wallpaper_restore && g_main_hwnd_addr &&
+          *g_main_hwnd_addr) {
+        g_wallpaper_restore(*g_main_hwnd_addr);
+      }
+
+      if (g_internal_flags_addr) {
+        if (screen_off) {
+          *g_internal_flags_addr &= ~INTERNAL_FLAG_WALLPAPERS_RESTORED;
+        } else {
+          *g_internal_flags_addr |= INTERNAL_FLAG_WALLPAPERS_RESTORED;
+        }
+      }
+    }
+    g_prev_screen_off = screen_off;
   }
-  g_prev_screen_off = screen_off;
 }
 
 static void WINAPI fake_detect_callback(void *state) {
@@ -499,8 +561,39 @@ void install_native_window_hook(void) {
   g_focus_addr = (unsigned int *)((unsigned char *)base + RVA_FOCUS_MASK);
   g_system_flags_addr =
       (unsigned int *)((unsigned char *)base + RVA_SYSTEM_FLAGS);
+  g_internal_flags_addr =
+      (unsigned int *)((unsigned char *)base + RVA_INTERNAL_FLAGS);
+  g_main_hwnd_addr =
+      (void **)((unsigned char *)base + RVA_MAIN_HWND);
   g_audio_activity_addr =
       (unsigned char *)((unsigned char *)base + RVA_AUDIO_ACTIVITY);
+
+  unsigned char *sleep_fn = (unsigned char *)base + RVA_SLEEP_HANDLER;
+  for (unsigned int i = 0; i < sizeof(kSleepHandlerPrologue); ++i) {
+    if (sleep_fn[i] != kSleepHandlerPrologue[i]) {
+      debug_log("native_window: sleep handler prologue mismatch (WE update?)");
+      sleep_fn = NULL;
+      break;
+    }
+  }
+  if (sleep_fn) {
+    g_sleep_state = (void *)((unsigned char *)base + RVA_SLEEP_STATE);
+    g_sleep_handler = (sleep_handler_t)(void *)sleep_fn;
+    debug_log("native_window: using WE sleep handler for screen off");
+  }
+
+  unsigned char *restore_fn = (unsigned char *)base + RVA_WALLPAPER_RESTORE;
+  for (unsigned int i = 0; i < sizeof(kRestorePrologue); ++i) {
+    if (restore_fn[i] != kRestorePrologue[i]) {
+      debug_log("native_window: restore prologue mismatch (WE update?)");
+      restore_fn = NULL;
+      break;
+    }
+  }
+  if (restore_fn) {
+    g_wallpaper_restore = (wallpaper_restore_t)(void *)restore_fn;
+    debug_log("native_window: using WE timer restore for screen wake");
+  }
 
   snare_inline_t hook = snare_inline_new(fn, (void *)fake_detect_callback);
   if (!hook) {
