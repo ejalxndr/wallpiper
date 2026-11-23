@@ -8,6 +8,7 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 find_package(ECM REQUIRED NO_MODULE)
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(KWAYLANDCLIENT REQUIRED IMPORTED_TARGET KWaylandClient)
+pkg_check_modules(PULSE REQUIRED IMPORTED_TARGET libpulse)
 
 set(CMAKE_MODULE_PATH
     ${ECM_MODULE_PATH}
@@ -15,7 +16,7 @@ set(CMAKE_MODULE_PATH
     ${CMAKE_MODULE_PATH}
 )
 
-find_package(Qt6 6.7 REQUIRED COMPONENTS Core Gui Qml Quick)
+find_package(Qt6 6.7 REQUIRED COMPONENTS Core DBus Gui Qml Quick)
 find_package(EGL REQUIRED)
 find_package(Vulkan REQUIRED)
 find_package(X11 REQUIRED COMPONENTS Xrandr)
@@ -36,6 +37,7 @@ qt_add_qml_module(wallpiper_capture_plugin
         include/egl_dmabuf_importer.h
         include/vulkan_dmabuf_importer.h
         include/capture_item.h
+        include/audio_activity_watcher.h
         include/native_window_watcher.h
         include/x11_output_lookup.h
 
@@ -46,6 +48,7 @@ qt_add_qml_module(wallpiper_capture_plugin
         src/egl_dmabuf_importer.cc
         src/vulkan_dmabuf_importer.cc
         src/capture_item.cc
+        src/audio_activity_watcher.cc
         src/native_window_watcher.cc
         src/x11_output_lookup.cc
 )
@@ -58,10 +61,12 @@ target_include_directories(wallpiper_capture_plugin PRIVATE
 
 target_link_libraries(wallpiper_capture_plugin PRIVATE
     Qt6::Core
+    Qt6::DBus
     Qt6::Gui
     Qt6::Qml
     Qt6::Quick
     PkgConfig::KWAYLANDCLIENT
+    PkgConfig::PULSE
     EGL::EGL
     Vulkan::Vulkan
     ${X11_LIBRARIES}

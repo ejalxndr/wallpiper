@@ -45,15 +45,16 @@ class Registry;
 
 namespace WallpiperKde {
 
+class AudioActivityWatcher;
 class CaptureCoordinator;
 
 /*
  * Watches native Plasma windows through KWin's Plasma window-management
- * protocol and publishes the affected screen rects into the wallpiper temp
- * directory.  The COFF shim loaded into wallpaper64.exe maps those rects to
- * Wallpaper Engine's own monitor indices with EnumDisplayMonitors and ORs the
- * resulting masks into WE's window-state masks, which makes WE's existing
- * per-monitor pause settings work for native Wayland windows.
+ * protocol, plus native audio streams and the screensaver state, and publishes
+ * them into the wallpiper temp directory.  The COFF shim loaded into
+ * wallpaper64.exe maps screen rects to Wallpaper Engine's own monitor indices
+ * with EnumDisplayMonitors and injects the result into WE's playback state, so
+ * WE's existing per-condition pause settings also work for native signals.
  *
  * Screen rects are used instead of capture channels because channel numbering
  * follows WE's swapchain creation order, which is not stable across launches.
@@ -68,6 +69,7 @@ public:
 private slots:
   void start();
   void evaluate();
+  void screenSaverActiveChanged(bool active);
 
 private:
   struct ScreenState {
@@ -84,6 +86,7 @@ private:
   void writeState(const QVector<ScreenState> &states);
 
   CaptureCoordinator *m_coordinator = nullptr;
+  AudioActivityWatcher *m_audioWatcher = nullptr;
   KWayland::Client::ConnectionThread *m_connection = nullptr;
   KWayland::Client::EventQueue *m_queue = nullptr;
   KWayland::Client::Registry *m_registry = nullptr;
@@ -93,6 +96,7 @@ private:
   QTimer *m_pollTimer = nullptr;
   QString m_statePath;
   QByteArray m_lastPayload;
+  bool m_screenOff = false;
   bool m_haveWritten = false;
   bool m_stateWriteWarningLogged = false;
   bool m_started = false;

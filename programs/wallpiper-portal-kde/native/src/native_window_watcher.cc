@@ -23,6 +23,7 @@
 
 #include "native_window_watcher.h"
 
+#include "audio_activity_watcher.h"
 #include "capture_coordinator.h"
 #include "wallpiper/native_window_state.h"
 
@@ -31,6 +32,9 @@
 #include <KWayland/Client/plasmawindowmanagement.h>
 #include <KWayland/Client/registry.h>
 
+#include <QDBusConnection>
+#include <QDBusInterface>
+#include <QDBusReply>
 #include <QDir>
 #include <QFile>
 #include <QGuiApplication>
@@ -41,6 +45,7 @@
 
 #include <algorithm>
 #include <cstring>
+#include <optional>
 
 namespace WallpiperKde {
 
@@ -62,28 +67,31 @@ bool isIgnoredApp(const QString &appId) {
       QStringLiteral("latte-dock"),
       QStringLiteral("plank"),
   };
-  return ignored.contains(appId);
+  return ignored.contains(appId) ||
+         appId.contains(QStringLiteral("wallpaper"), Qt::CaseInsensitive);
+}
+
+qint64 overlapArea(const QRect &a, const QRect &b) {
+  if (a.isEmpty() || b.isEmpty() || !a.isValid() || !b.isValid()) {
+    return 0;
+  }
+  const QRect overlap = a.intersected(b);
+  if (overlap.isEmpty()) {
+    return 0;
+  }
+  return static_cast<qint64>(overlap.width()) * overlap.height();
 }
 
 bool coversRect(const QRect &window, const QRect &target) {
-  if (window.isEmpty() || target.isEmpty() || !window.isValid() ||
-      !target.isValid()) {
+  if (target.isEmpty() || !target.isValid()) {
     return false;
   }
-
-  const QRect overlap = window.intersected(target);
-  if (overlap.isEmpty()) {
-    return false;
-  }
-
-  const qint64 overlapArea =
-      static_cast<qint64>(overlap.width()) * overlap.height();
   const qint64 targetArea =
       static_cast<qint64>(target.width()) * target.height();
   if (targetArea <= 0) {
     return false;
   }
-  return overlapArea * 100 >= targetArea * kCoveragePercent;
+  return overlapArea(window, target) * 100 >= targetArea * kCoveragePercent;
 }
 
 } // namespace
@@ -109,11 +117,48 @@ NativeWindowWatcher::NativeWindowWatcher(CaptureCoordinator *coordinator,
   m_pollTimer->setInterval(kPollIntervalMs);
   connect(m_pollTimer, &QTimer::timeout, this, &NativeWindowWatcher::evaluate);
 
+  m_audioWatcher = new AudioActivityWatcher;
+
+  QDBusConnection bus = QDBusConnection::sessionBus();
+  if (!bus.connect(QStringLiteral("org.freedesktop.ScreenSaver"),
+                   QStringLiteral("/ScreenSaver"),
+                   QStringLiteral("org.freedesktop.ScreenSaver"),
+                   QStringLiteral("ActiveChanged"), this,
+                   SLOT(screenSaverActiveChanged(bool)))) {
+    qWarning()
+        << "[native-window] cannot subscribe to ScreenSaver.ActiveChanged";
+  }
+
+  QDBusInterface screensaver(QStringLiteral("org.freedesktop.ScreenSaver"),
+                             QStringLiteral("/ScreenSaver"),
+                             QStringLiteral("org.freedesktop.ScreenSaver"), bus,
+                             this);
+  if (screensaver.isValid()) {
+    const QDBusReply<bool> reply =
+        screensaver.call(QStringLiteral("GetActive"));
+    if (reply.isValid()) {
+      m_screenOff = reply.value();
+    } else {
+      qWarning() << "[native-window] ScreenSaver.GetActive failed:"
+                 << reply.error().message();
+    }
+  }
+
+  m_pollTimer->start();
+
   QMetaObject::invokeMethod(this, &NativeWindowWatcher::start,
                             Qt::QueuedConnection);
 }
 
-NativeWindowWatcher::~NativeWindowWatcher() = default;
+NativeWindowWatcher::~NativeWindowWatcher() { delete m_audioWatcher; }
+
+void NativeWindowWatcher::screenSaverActiveChanged(bool active) {
+  if (m_screenOff == active) {
+    return;
+  }
+  m_screenOff = active;
+  evaluate();
+}
 
 void NativeWindowWatcher::start() {
   if (m_started) {
@@ -136,8 +181,8 @@ void NativeWindowWatcher::start() {
           this, [this] {
             m_windows.clear();
             m_windowManager = nullptr;
-            writeState({});
             qWarning() << "[native-window] Wayland connection died";
+            evaluate();
           });
   connect(m_connection, &KWayland::Client::ConnectionThread::failed, this,
           [] { qWarning() << "[native-window] failed to connect to Wayland"; });
@@ -179,7 +224,6 @@ void NativeWindowWatcher::bindWindowManager() {
           watchWindow(window);
         }
 
-        m_pollTimer->start();
         qInfo() << "[native-window] watching" << windows.size()
                 << "existing windows";
         evaluate();
@@ -199,6 +243,8 @@ void NativeWindowWatcher::watchWindow(KWayland::Client::PlasmaWindow *window) {
             m_windows.remove(window);
             m_settleTimer->start();
           });
+  connect(window, &KWayland::Client::PlasmaWindow::activeChanged, this,
+          [this] { m_settleTimer->start(); });
   connect(window, &KWayland::Client::PlasmaWindow::fullscreenChanged, this,
           [this] { m_settleTimer->start(); });
   connect(window, &KWayland::Client::PlasmaWindow::maximizedChanged, this,
@@ -219,6 +265,61 @@ void NativeWindowWatcher::evaluate() {
   QHash<const QScreen *, ScreenStateBuilder> statesByScreen;
 
   const QList<QScreen *> screens = QGuiApplication::screens();
+
+  auto screenHasChannel =
+      [this](const QScreen *screen) -> std::optional<uint32_t> {
+    if (!m_coordinator) {
+      return std::nullopt;
+    }
+    const std::optional<uint32_t> channel =
+        m_coordinator->channelForScreen(screen);
+    if (!channel || *channel >= 32) {
+      return std::nullopt;
+    }
+    return channel;
+  };
+
+  KWayland::Client::PlasmaWindow *activeWindow = nullptr;
+  for (KWayland::Client::PlasmaWindow *window : m_windows) {
+    if (!window || !window->isActive() || window->isMinimized() ||
+        isIgnoredApp(window->appId())) {
+      continue;
+    }
+    activeWindow = window;
+    break;
+  }
+
+  if (activeWindow) {
+    const QRect windowRect = activeWindow->geometry();
+    QScreen *focusScreen = nullptr;
+    qint64 bestArea = 0;
+    for (QScreen *screen : screens) {
+      const qint64 area = overlapArea(windowRect, screen->geometry());
+      if (area > bestArea) {
+        bestArea = area;
+        focusScreen = screen;
+      }
+    }
+    if (!focusScreen && !windowRect.isEmpty()) {
+      const QPoint center = windowRect.center();
+      for (QScreen *screen : screens) {
+        if (screen->geometry().contains(center)) {
+          focusScreen = screen;
+          break;
+        }
+      }
+    }
+
+    if (focusScreen) {
+      const std::optional<uint32_t> channel = screenHasChannel(focusScreen);
+      if (channel) {
+        ScreenStateBuilder &entry = statesByScreen[focusScreen];
+        entry.channel = *channel;
+        entry.flags |= WP_NATIVE_WINDOW_FLAG_FOCUSED;
+      }
+    }
+  }
+
   for (KWayland::Client::PlasmaWindow *window : m_windows) {
     if (!window || window->isMinimized() || isIgnoredApp(window->appId())) {
       continue;
@@ -254,10 +355,8 @@ void NativeWindowWatcher::evaluate() {
         continue;
       }
       // Only screens with a bound capture channel are managed by wallpiper.
-      const std::optional<uint32_t> channel =
-          m_coordinator ? m_coordinator->channelForScreen(screen)
-                        : std::nullopt;
-      if (!channel || *channel >= 32) {
+      const std::optional<uint32_t> channel = screenHasChannel(screen);
+      if (!channel) {
         continue;
       }
       ScreenStateBuilder &entry = statesByScreen[screen];
@@ -285,10 +384,16 @@ void NativeWindowWatcher::evaluate() {
 void NativeWindowWatcher::writeState(const QVector<ScreenState> &states) {
   static_assert(sizeof(int32_t) == sizeof(int),
                 "state file layout requires 32-bit int");
+  static_assert(WP_NATIVE_WINDOW_STATE_V1_SIZE == 176u,
+                "WNW1 wire layout changed");
+  static_assert(sizeof(WpNativeWindowState) == 184u,
+                "WNW2 wire layout changed");
 
   WpNativeWindowState payload;
   std::memset(&payload, 0, sizeof(payload));
   payload.magic = WP_NATIVE_WINDOW_STATE_MAGIC;
+  payload.audio_active = m_audioWatcher && m_audioWatcher->active() ? 1u : 0u;
+  payload.screen_off = m_screenOff ? 1u : 0u;
   payload.count =
       std::min(static_cast<uint32_t>(states.size()),
                static_cast<uint32_t>(WP_NATIVE_WINDOW_STATE_MAX_SCREENS));
@@ -337,7 +442,8 @@ void NativeWindowWatcher::writeState(const QVector<ScreenState> &states) {
   m_lastPayload = bytes;
   m_haveWritten = true;
   qInfo() << "[native-window] published" << payload.count
-          << "screen states:" << bytes.toHex();
+          << "screen states, audio=" << payload.audio_active
+          << "screen_off=" << payload.screen_off << ":" << bytes.toHex();
 }
 
 } // namespace WallpiperKde

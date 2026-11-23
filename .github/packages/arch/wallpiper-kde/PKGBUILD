@@ -7,8 +7,8 @@ pkgdesc="KDE Plasma 6 portal for wallpiper"
 arch=('x86_64')
 url="https://github.com/shdwmtr/wallpiper"
 license=('MIT')
-depends=('wallpiper' 'qt6-base' 'qt6-declarative' 'kwayland' 'mesa' 'libx11' 'libxrandr')
-makedepends=('git' 'cmake' 'extra-cmake-modules' 'pkgconf' 'qt6-base' 'qt6-declarative' 'kwayland' 'mesa' 'libx11' 'libxrandr')
+depends=('wallpiper' 'qt6-base' 'qt6-declarative' 'kwayland' 'mesa' 'libx11' 'libxrandr' 'libpulse')
+makedepends=('git' 'cmake' 'extra-cmake-modules' 'pkgconf' 'qt6-base' 'qt6-declarative' 'kwayland' 'mesa' 'libx11' 'libxrandr' 'libpulse')
 install="wallpiper-kde.install"
 source=("$pkgname::git+$url.git#tag=v$pkgver")
 sha256sums=('SKIP')

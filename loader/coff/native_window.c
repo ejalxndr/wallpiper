@@ -20,24 +20,34 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  *
- * Native-window fullscreen/maximized forwarding for the KDE portal.
+ * Native playback-condition forwarding for the KDE portal.
  *
  * Wallpaper Engine decides "pause when other application is
- * maximized/fullscreen" from two per-monitor bitmasks inside wallpaper64.exe:
+ * focused/maximized/fullscreen" from per-monitor bitmasks inside
+ * wallpaper64.exe:
  *
- *   RVA 0x4e5304 : maximized mask   (bit N = monitor N)
- *   RVA 0x4e5308 : fullscreen mask  (bit N = monitor N)
+ *   RVA 0x4e5300 : focus mask      (bit N = monitor N)
+ *   RVA 0x4e5304 : maximized mask  (bit N = monitor N)
+ *   RVA 0x4e5308 : fullscreen mask (bit N = monitor N)
  *
- * Those masks are recomputed by an internal detector at RVA 0x3d050, which
- * inspects Win32 windows with GetForegroundWindow/EnumWindows and therefore
- * cannot see native Plasma/KWin windows.  We hook that detector, let it run,
- * then OR in native window state delivered through a file.
+ * It also reads two globals for the audio condition and one system-flag bit
+ * for the sleep condition:
+ *
+ *   RVA 0x4e6198 : audio activity detected (byte)
+ *   RVA 0x4e52e4 : system flags, bit 0x20 = screen off
+ *
+ * Those values are recomputed from Win32 signals inside the playback
+ * evaluator, which cannot see native Plasma windows, PipeWire streams or
+ * Plasma's screensaver state.  We hook the internal detector at RVA 0x3d050,
+ * let it run, then OR/inject the native values before the evaluator reads
+ * them.  No new wallpiperctl option is added: the user's existing
+ * playbackfocus/playbackaudio/playbacksleep settings decide the action.
  *
  * The file carries screen rects, not mask bits: capture channels follow WE's
  * swapchain creation order and are not stable across launches, while the mask
  * bits use WE's own monitor index.  We map each rect to a monitor index with
- * EnumDisplayMonitors in this process, the same enumeration WE uses.  A legacy
- * 8-byte (channel-indexed) file is still accepted as a fallback.
+ * EnumDisplayMonitors in this process, the same enumeration WE uses.  The
+ * legacy 8-byte (channel-indexed) file is still accepted as a fallback.
  *
  * All RVAs are from wallpaper64.exe, PE image base 0x140000000.  A byte-pattern
  * guard is checked before installing so a future WE update fails safe.
@@ -55,10 +65,15 @@
 
 /* --- offsets in wallpaper64.exe (validated against the installed binary) ---
  */
-#define RVA_DETECT_CALLBACK                                                    \
-  0x3d050u /* FUN_14003d050: recompute window-state masks */
+#define RVA_DETECT_CALLBACK 0x3d050u /* FUN_14003d050: recompute window state  \
+                                      */
+#define RVA_FOCUS_MASK 0x4e5300u
 #define RVA_MAXIMIZED_MASK 0x4e5304u
 #define RVA_FULLSCREEN_MASK 0x4e5308u
+#define RVA_SYSTEM_FLAGS 0x4e52e4u
+#define RVA_AUDIO_ACTIVITY 0x4e6198u
+
+#define SYSTEM_FLAG_SCREEN_OFF 0x20u
 
 static const unsigned char kDetectPrologue[8] = {
     0x40, 0x56,            /* push rsi */
@@ -73,7 +88,7 @@ typedef UINT_PTR(WINAPI *set_timer_t)(HWND, UINT_PTR, UINT, void *);
  * WE only re-evaluates window state from its 0x68 WM_TIMER, whose interval is
  * the user setting `windowupdaterate` (clamped by WE to >=50 ms).  On this
  * setup that interval is ~1000 ms, which is what makes pausing feel delayed.
- * Clamp just that timer to 100 ms so the injected masks are acted on promptly.
+ * Clamp just that timer to 100 ms so the injected state is acted on promptly.
  */
 #define WINDOW_UPDATE_TIMER_ID 0x68u
 #define WINDOW_UPDATE_INTERVAL_MS 100u
@@ -83,9 +98,19 @@ static set_timer_t real_set_timer;
 static snare_inline_t g_set_timer_hook;
 static volatile unsigned int g_fullscreen_mask;
 static volatile unsigned int g_maximized_mask;
+static volatile unsigned int g_focus_mask;
+static volatile unsigned int g_audio_active;
+static volatile unsigned int g_screen_off;
 static volatile unsigned int g_hook_calls;
 static unsigned int *g_fullscreen_addr;
 static unsigned int *g_maximized_addr;
+static unsigned int *g_focus_addr;
+static unsigned int *g_system_flags_addr;
+static unsigned char *g_audio_activity_addr;
+
+/* Only the hook thread touches these transition guards. */
+static unsigned int g_prev_audio_active;
+static unsigned int g_prev_screen_off;
 
 #define MAX_TRACKED_MONITORS 8u
 static RECT g_monitor_rects[MAX_TRACKED_MONITORS];
@@ -153,9 +178,11 @@ static void refresh_monitor_rects(void) {
  */
 static void masks_from_state(const WpNativeWindowState *state,
                              unsigned int *fullscreenMask,
-                             unsigned int *maximizedMask) {
+                             unsigned int *maximizedMask,
+                             unsigned int *focusMask) {
   *fullscreenMask = 0;
   *maximizedMask = 0;
+  *focusMask = 0;
 
   const int origin_x = GetSystemMetrics(SM_XVIRTUALSCREEN);
   const int origin_y = GetSystemMetrics(SM_YVIRTUALSCREEN);
@@ -177,6 +204,9 @@ static void masks_from_state(const WpNativeWindowState *state,
           }
           if (screen->flags & WP_NATIVE_WINDOW_FLAG_MAXIMIZED) {
             *maximizedMask |= 1u << j;
+          }
+          if (screen->flags & WP_NATIVE_WINDOW_FLAG_FOCUSED) {
+            *focusMask |= 1u << j;
           }
         }
         break;
@@ -214,40 +244,97 @@ static DWORD WINAPI state_poll_thread(LPVOID param) {
                     NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
     if (h != INVALID_HANDLE_VALUE) {
       unsigned char payload[sizeof(WpNativeWindowState)];
+      memset(payload, 0, sizeof(payload));
       DWORD read_bytes = 0;
       BOOL ok = ReadFile(h, payload, sizeof(payload), &read_bytes, NULL);
       CloseHandle(h);
       if (ok && read_bytes >= sizeof(unsigned int) * 2) {
-        WpNativeWindowState state;
-        memcpy(&state, payload,
-               read_bytes < sizeof(state) ? read_bytes : sizeof(state));
-        if (read_bytes == sizeof(state) &&
-            state.magic == WP_NATIVE_WINDOW_STATE_MAGIC) {
+        unsigned int magic = 0;
+        if (read_bytes >= sizeof(unsigned int) * 3) {
+          memcpy(&magic, payload + sizeof(unsigned int) * 2, sizeof(magic));
+        }
+
+        if (magic == WP_NATIVE_WINDOW_STATE_MAGIC &&
+            read_bytes >= sizeof(WpNativeWindowState)) {
+          WpNativeWindowState state;
+          memcpy(&state, payload, sizeof(state));
           unsigned int fs = 0;
           unsigned int mx = 0;
-          masks_from_state(&state, &fs, &mx);
+          unsigned int focus = 0;
+          masks_from_state(&state, &fs, &mx, &focus);
           g_fullscreen_mask = fs;
           g_maximized_mask = mx;
+          g_focus_mask = focus;
+          g_audio_active = state.audio_active ? 1u : 0u;
+          g_screen_off = state.screen_off ? 1u : 0u;
+        } else if (magic == WP_NATIVE_WINDOW_STATE_V1_MAGIC &&
+                   read_bytes >= WP_NATIVE_WINDOW_STATE_V1_SIZE) {
+          WpNativeWindowState state;
+          memset(&state, 0, sizeof(state));
+          memcpy(&state, payload, WP_NATIVE_WINDOW_STATE_V1_SIZE);
+          unsigned int fs = 0;
+          unsigned int mx = 0;
+          unsigned int focus = 0;
+          masks_from_state(&state, &fs, &mx, &focus);
+          g_fullscreen_mask = fs;
+          g_maximized_mask = mx;
+          g_focus_mask = 0;
+          g_audio_active = 0;
+          g_screen_off = 0;
         } else {
           /* Legacy 8-byte, channel-indexed payload. */
           g_fullscreen_mask = ((const unsigned int *)payload)[0];
           g_maximized_mask = ((const unsigned int *)payload)[1];
+          g_focus_mask = 0;
+          g_audio_active = 0;
+          g_screen_off = 0;
         }
       }
     }
 
-    /* Every ~5 s, report that the hook is alive and which masks it sees. */
+    /* Every ~5 s, report that the hook is alive and which state it sees. */
     if (++log_ticks >= 50u) {
       log_ticks = 0;
-      char msg[192];
+      char msg[256];
       wsprintfA(msg,
                 "native_window: hook_calls=%u monitors=%u unmapped=%u "
-                "state fs=%u mx=%u",
+                "fs=%u mx=%u focus=%u audio=%u screen_off=%u",
                 g_hook_calls, g_monitor_count, g_unmapped_screens,
-                g_fullscreen_mask, g_maximized_mask);
+                g_fullscreen_mask, g_maximized_mask, g_focus_mask,
+                g_audio_active, g_screen_off);
       debug_log(msg);
     }
   }
+}
+
+/*
+ * WE's playback evaluator reads the masks and globals immediately after the
+ * hooked detector returns.  Injecting here means WE's own settings still
+ * choose the action, and its own Win32 detections are preserved with OR.
+ */
+static void inject_native_playback_state(void) {
+  unsigned int focus = g_focus_mask;
+  if (focus && g_focus_addr) {
+    *g_focus_addr |= focus;
+  }
+
+  unsigned int audio = g_audio_active;
+  if (audio && g_audio_activity_addr) {
+    *g_audio_activity_addr = 1;
+  } else if (g_prev_audio_active && g_audio_activity_addr) {
+    /* Only clear a transition we previously injected. */
+    *g_audio_activity_addr = 0;
+  }
+  g_prev_audio_active = audio;
+
+  unsigned int screen_off = g_screen_off;
+  if (screen_off && g_system_flags_addr) {
+    *g_system_flags_addr |= SYSTEM_FLAG_SCREEN_OFF;
+  } else if (g_prev_screen_off && g_system_flags_addr) {
+    /* Only clear a transition we previously injected. */
+    *g_system_flags_addr &= ~SYSTEM_FLAG_SCREEN_OFF;
+  }
+  g_prev_screen_off = screen_off;
 }
 
 static void WINAPI fake_detect_callback(void *state) {
@@ -256,6 +343,7 @@ static void WINAPI fake_detect_callback(void *state) {
   }
 
   g_hook_calls++;
+  inject_native_playback_state();
 
   unsigned int fs = g_fullscreen_mask;
   unsigned int mx = g_maximized_mask;
@@ -345,6 +433,11 @@ void install_native_window_hook(void) {
       (unsigned int *)((unsigned char *)base + RVA_FULLSCREEN_MASK);
   g_maximized_addr =
       (unsigned int *)((unsigned char *)base + RVA_MAXIMIZED_MASK);
+  g_focus_addr = (unsigned int *)((unsigned char *)base + RVA_FOCUS_MASK);
+  g_system_flags_addr =
+      (unsigned int *)((unsigned char *)base + RVA_SYSTEM_FLAGS);
+  g_audio_activity_addr =
+      (unsigned char *)((unsigned char *)base + RVA_AUDIO_ACTIVITY);
 
   snare_inline_t hook = snare_inline_new(fn, (void *)fake_detect_callback);
   if (!hook) {

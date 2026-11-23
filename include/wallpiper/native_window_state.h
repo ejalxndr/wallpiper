@@ -25,24 +25,31 @@
  * Wire format shared by the KDE portal (writer) and the dwmapi shim (reader)
  * inside wallpaper64.exe.
  *
- * The old format was two uint32 masks indexed by capture channel.  Channels
- * follow Wallpaper Engine's swapchain creation order, which is not stable
- * across launches, while WE's playback masks are indexed by its own monitor
- * order.  Publish screen rects instead so the shim can derive the monitor
- * indices with EnumDisplayMonitors in the same process as WE.
+ * The old channel-indexed format (WNW1) is still parsed: its first 8 bytes are
+ * kept for backward compatibility.  WNW1 carried only window fullscreen and
+ * maximized state.  WNW2 adds the focused window's screen and two global
+ * playback conditions so Wallpaper Engine's own settings can be reused for
+ * native Plasma windows, native audio streams and screensaver state.
  *
- * Coordinates are native (X11/Wayland) logical pixels; the shim translates
- * them into Wine coordinates with GetSystemMetrics(SM_XVIRTUALSCREEN/Y...).
- * All fields are 32-bit on both the Qt and the freestanding Windows builds.
+ * Screen coordinates are native (X11/Wayland) logical pixels; the shim
+ * translates them into Wine coordinates with
+ * GetSystemMetrics(SM_XVIRTUALSCREEN/ Y...).  All fields are 32-bit on both the
+ * Qt and the freestanding Windows builds.
  */
 
 #ifndef WALLPIPER_NATIVE_WINDOW_STATE_H
 #define WALLPIPER_NATIVE_WINDOW_STATE_H
 
-#define WP_NATIVE_WINDOW_STATE_MAGIC 0x574e5731u /* "WNW1" */
+#define WP_NATIVE_WINDOW_STATE_V1_MAGIC 0x574e5731u /* "WNW1" */
+#define WP_NATIVE_WINDOW_STATE_MAGIC 0x574e5732u    /* "WNW2" */
 #define WP_NATIVE_WINDOW_STATE_MAX_SCREENS 8u
 #define WP_NATIVE_WINDOW_FLAG_FULLSCREEN 0x1u
 #define WP_NATIVE_WINDOW_FLAG_MAXIMIZED 0x2u
+#define WP_NATIVE_WINDOW_FLAG_FOCUSED 0x4u
+
+/* Size of the WNW1 payload: legacy masks + magic + count + screen rects. */
+#define WP_NATIVE_WINDOW_STATE_V1_SIZE                                         \
+  (16u + WP_NATIVE_WINDOW_STATE_MAX_SCREENS * sizeof(WpNativeWindowScreen))
 
 typedef struct WpNativeWindowScreen {
   int x;
@@ -60,6 +67,10 @@ typedef struct WpNativeWindowState {
   unsigned int magic;
   unsigned int count;
   WpNativeWindowScreen screens[WP_NATIVE_WINDOW_STATE_MAX_SCREENS];
+
+  /* WNW2-only fields. */
+  unsigned int audio_active;
+  unsigned int screen_off;
 } WpNativeWindowState;
 
 #endif /* WALLPIPER_NATIVE_WINDOW_STATE_H */
