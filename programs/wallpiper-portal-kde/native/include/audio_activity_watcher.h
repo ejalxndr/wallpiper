@@ -24,6 +24,7 @@
 #pragma once
 
 #include <atomic>
+#include <functional>
 #include <thread>
 
 namespace WallpiperKde {
@@ -35,7 +36,7 @@ namespace WallpiperKde {
  */
 class AudioActivityWatcher {
 public:
-  AudioActivityWatcher();
+  explicit AudioActivityWatcher(std::function<void()> onChange = {});
   ~AudioActivityWatcher();
 
   AudioActivityWatcher(const AudioActivityWatcher &) = delete;
@@ -44,12 +45,17 @@ public:
   bool active() const { return m_active.load(std::memory_order_acquire); }
 
   void setActive(bool active) {
-    m_active.store(active, std::memory_order_release);
+    const bool changed =
+        m_active.exchange(active, std::memory_order_acq_rel) != active;
+    if (changed && m_onChange) {
+      m_onChange();
+    }
   }
 
 private:
   void run();
 
+  std::function<void()> m_onChange;
   std::atomic<bool> m_active{false};
   std::atomic<bool> m_stop{false};
   std::thread m_thread;

@@ -33,6 +33,7 @@
 
 #include <chrono>
 #include <cstdio>
+#include <utility>
 
 namespace WallpiperKde {
 
@@ -43,7 +44,6 @@ constexpr auto kScanInterval = std::chrono::milliseconds(250);
 constexpr auto kIterateInterval = std::chrono::milliseconds(20);
 
 struct ScanState {
-  AudioActivityWatcher *watcher;
   bool any = false;
 };
 
@@ -75,7 +75,6 @@ void sinkInputCallback(pa_context *, const pa_sink_input_info *info, int eol,
     return;
   }
   if (eol) {
-    scan->watcher->setActive(scan->any);
     return;
   }
   if (!info || info->corked || info->mute || isWallpaperEngine(info)) {
@@ -86,7 +85,8 @@ void sinkInputCallback(pa_context *, const pa_sink_input_info *info, int eol,
 
 } // namespace
 
-AudioActivityWatcher::AudioActivityWatcher() {
+AudioActivityWatcher::AudioActivityWatcher(std::function<void()> onChange)
+    : m_onChange(std::move(onChange)) {
   m_thread = std::thread(&AudioActivityWatcher::run, this);
 }
 
@@ -128,12 +128,23 @@ void AudioActivityWatcher::run() {
 
       const auto now = std::chrono::steady_clock::now();
       if (now >= nextScan) {
-        ScanState scan{this, false};
+        ScanState scan{false};
         pa_operation *op = pa_context_get_sink_input_info_list(
             context, sinkInputCallback, &scan);
         if (op) {
+          /*
+           * PulseAudio calls back asynchronously.  Keep the stack-local
+           * ScanState alive until the operation completes, otherwise a late
+           * callback can publish a stale "audio active" result and delay the
+           * unmute after a stream stops.
+           */
+          while (!m_stop.load(std::memory_order_acquire) &&
+                 pa_operation_get_state(op) == PA_OPERATION_RUNNING) {
+            pa_mainloop_iterate(loop, 1, nullptr);
+          }
           pa_operation_unref(op);
         }
+        setActive(scan.any);
         nextScan = now + kScanInterval;
       }
       std::this_thread::sleep_for(kIterateInterval);

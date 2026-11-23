@@ -65,13 +65,14 @@
 
 /* --- offsets in wallpaper64.exe (validated against the installed binary) ---
  */
-#define RVA_DETECT_CALLBACK 0x3d050u /* FUN_14003d050: recompute window state  \
-                                      */
+/* FUN_14003d050: recompute window state */
+#define RVA_DETECT_CALLBACK 0x3d050u
 #define RVA_FOCUS_MASK 0x4e5300u
 #define RVA_MAXIMIZED_MASK 0x4e5304u
 #define RVA_FULLSCREEN_MASK 0x4e5308u
 #define RVA_SYSTEM_FLAGS 0x4e52e4u
 #define RVA_AUDIO_ACTIVITY 0x4e6198u
+#define RVA_AUDIO_DETECT 0x138b80u
 
 #define SYSTEM_FLAG_SCREEN_OFF 0x20u
 
@@ -81,7 +82,22 @@ static const unsigned char kDetectPrologue[8] = {
     0x48, 0x83, 0xec, 0x58 /* sub rsp, 0x58 */
 };
 
+/*
+ * WE normally asks this helper (only caller: the audio branch of the playback
+ * evaluator) whether another application is playing audio.  Its WASAPI-based
+ * result cannot see native PulseAudio/PipeWire streams under Proton, so the
+ * byte written at RVA_AUDIO_ACTIVITY is only consulted on a rarely used path.
+ * Hook the helper's result instead.
+ */
+static const unsigned char kAudioDetectPrologue[9] = {
+    0x48, 0x89, 0x4c, 0x24, 0x08, /* mov [rsp+8], rcx */
+    0x55,                         /* push rbp */
+    0x53,                         /* push rbx */
+    0x41, 0x57                    /* push r15 */
+};
+
 typedef void(WINAPI *detect_callback_t)(void *state);
+typedef unsigned char(WINAPI *audio_detect_t)(void *state, void *device);
 typedef UINT_PTR(WINAPI *set_timer_t)(HWND, UINT_PTR, UINT, void *);
 
 /*
@@ -94,8 +110,10 @@ typedef UINT_PTR(WINAPI *set_timer_t)(HWND, UINT_PTR, UINT, void *);
 #define WINDOW_UPDATE_INTERVAL_MS 100u
 
 static detect_callback_t real_detect_callback;
+static audio_detect_t real_audio_detect;
 static set_timer_t real_set_timer;
 static snare_inline_t g_set_timer_hook;
+static snare_inline_t g_audio_detect_hook;
 static volatile unsigned int g_fullscreen_mask;
 static volatile unsigned int g_maximized_mask;
 static volatile unsigned int g_focus_mask;
@@ -360,6 +378,21 @@ static void WINAPI fake_detect_callback(void *state) {
   }
 }
 
+/*
+ * Preserve WE's own detection (and its side effects), then force the result
+ * when a native non-WE stream is active so playbackaudio can act on it.
+ */
+static unsigned char WINAPI fake_audio_detect(void *state, void *device) {
+  unsigned char detected = 0;
+  if (real_audio_detect) {
+    detected = real_audio_detect(state, device);
+  }
+  if (g_audio_active) {
+    detected = 1;
+  }
+  return detected;
+}
+
 static UINT_PTR WINAPI fake_set_timer(HWND hWnd, UINT_PTR nIDEvent,
                                       UINT uElapse, void *lpTimerFunc) {
   if (nIDEvent == WINDOW_UPDATE_TIMER_ID &&
@@ -408,6 +441,36 @@ static void install_window_update_timer_hook(void) {
 
   g_set_timer_hook = hook;
   debug_log("native_window: clamped window update timer to 100 ms");
+}
+
+static void install_audio_detect_hook(unsigned char *base) {
+  unsigned char *fn = base + RVA_AUDIO_DETECT;
+  for (unsigned int i = 0; i < sizeof(kAudioDetectPrologue); ++i) {
+    if (fn[i] != kAudioDetectPrologue[i]) {
+      debug_log("native_window: audio detector prologue mismatch, skipping");
+      return;
+    }
+  }
+
+  snare_inline_t hook = snare_inline_new(fn, (void *)fake_audio_detect);
+  if (!hook) {
+    debug_log("native_window: snare_inline_new failed for audio detector");
+    return;
+  }
+  if (snare_inline_install(hook) != 0) {
+    debug_log("native_window: could not install audio detector hook");
+    snare_inline_free(hook);
+    return;
+  }
+  real_audio_detect = (audio_detect_t)snare_inline_get_trampoline(hook);
+  if (!real_audio_detect) {
+    debug_log("native_window: no audio detector trampoline, removing hook");
+    snare_inline_remove(hook);
+    snare_inline_free(hook);
+    return;
+  }
+  g_audio_detect_hook = hook;
+  debug_log("native_window: hooked audio detector");
 }
 
 void install_native_window_hook(void) {
@@ -463,6 +526,7 @@ void install_native_window_hook(void) {
             (void *)base);
   debug_log(msg);
 
+  install_audio_detect_hook((unsigned char *)base);
   install_window_update_timer_hook();
 
   HANDLE thread = CreateThread(NULL, 0, state_poll_thread, NULL, 0, NULL);

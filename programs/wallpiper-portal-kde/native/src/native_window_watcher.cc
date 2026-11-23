@@ -117,7 +117,10 @@ NativeWindowWatcher::NativeWindowWatcher(CaptureCoordinator *coordinator,
   m_pollTimer->setInterval(kPollIntervalMs);
   connect(m_pollTimer, &QTimer::timeout, this, &NativeWindowWatcher::evaluate);
 
-  m_audioWatcher = new AudioActivityWatcher;
+  m_audioWatcher = new AudioActivityWatcher([this] {
+    QMetaObject::invokeMethod(this, &NativeWindowWatcher::evaluate,
+                              Qt::QueuedConnection);
+  });
 
   QDBusConnection bus = QDBusConnection::sessionBus();
   if (!bus.connect(QStringLiteral("org.freedesktop.ScreenSaver"),
