@@ -22,6 +22,9 @@
  */
 
 #include "x11_output_lookup.h"
+#include "wallpiper-wl/portal.h"
+
+#include <string.h>
 
 #include <stdio.h>
 
@@ -29,8 +32,8 @@
 #include <X11/extensions/Xrandr.h>
 
 static Display *get_x11_display(void) {
-  static Display *dpy = NULL;
-  static bool tried = false;
+  static __thread Display *dpy = NULL;
+  static __thread bool tried = false;
   if (!tried) {
     tried = true;
     dpy = XOpenDisplay(NULL);
@@ -113,6 +116,44 @@ bool wp_wl_x11_output_for_size(uint32_t width, uint32_t height, char *name_out,
           snprintf(name_out, name_out_len, "%s", output_info->name);
           found = true;
         }
+        XRRFreeCrtcInfo(crtc_info);
+      }
+    }
+    XRRFreeOutputInfo(output_info);
+  }
+
+  XRRFreeScreenResources(res);
+  return found;
+}
+
+bool wp_wl_x11_output_rect(const char *name, int32_t *x, int32_t *y,
+                           uint32_t *width, uint32_t *height) {
+  Display *dpy = get_x11_display();
+  if (!dpy) {
+    return false;
+  }
+
+  Window root = DefaultRootWindow(dpy);
+  XRRScreenResources *res = XRRGetScreenResourcesCurrent(dpy, root);
+  if (!res) {
+    return false;
+  }
+
+  bool found = false;
+  for (int i = 0; i < res->noutput && !found; i++) {
+    XRROutputInfo *output_info = XRRGetOutputInfo(dpy, res, res->outputs[i]);
+    if (!output_info) {
+      continue;
+    }
+    if (output_info->connection == RR_Connected && output_info->crtc != None &&
+        strcmp(output_info->name, name) == 0) {
+      XRRCrtcInfo *crtc_info = XRRGetCrtcInfo(dpy, res, output_info->crtc);
+      if (crtc_info) {
+        *x = crtc_info->x;
+        *y = crtc_info->y;
+        *width = crtc_info->width;
+        *height = crtc_info->height;
+        found = true;
         XRRFreeCrtcInfo(crtc_info);
       }
     }

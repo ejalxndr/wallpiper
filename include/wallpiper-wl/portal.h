@@ -44,3 +44,6 @@ void wp_wl_portal_run(const wp_wl_portal_config_t *config);
 void wp_wl_geometry_from_scale(int32_t x, int32_t y, uint32_t width,
                                uint32_t height, double scale,
                                wp_monitor_geometry_t *out);
+
+bool wp_wl_x11_output_rect(const char *name, int32_t *x, int32_t *y,
+                           uint32_t *width, uint32_t *height);
