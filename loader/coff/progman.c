@@ -25,6 +25,7 @@
 #include "cursor.h"
 #include "ipc_triggers.h"
 #include "menu.h"
+#include "native_window.h"
 #include "pe_iat.h"
 #include "spawn.h"
 #include "tray.h"
@@ -127,4 +128,5 @@ void install_progman_hook(void) {
   install_spawn_hooks();
   install_cursor_hooks();
   install_window_visibility_hooks();
+  install_native_window_hook();
 }

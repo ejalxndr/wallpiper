@@ -32,6 +32,8 @@
 #include <qopengl.h>
 #include <qqmlintegration.h>
 
+QT_FORWARD_DECLARE_CLASS(QHoverEvent)
+
 #include <condition_variable>
 #include <deque>
 #include <memory>
@@ -98,6 +100,9 @@ signals:
   void statsChanged();
 
 protected:
+  void hoverMoveEvent(QHoverEvent *event) override;
+  void hoverLeaveEvent(QHoverEvent *event) override;
+
   QSGNode *updatePaintNode(QSGNode *oldNode,
                            UpdatePaintNodeData *data) override;
 

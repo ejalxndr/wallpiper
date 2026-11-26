@@ -26,6 +26,7 @@
 #include "capture_item.h"
 #include "capture_socket.h"
 #include "ctl_listener.h"
+#include "native_window_watcher.h"
 #include "x11_output_lookup.h"
 
 #include <QCursor>
@@ -33,6 +34,8 @@
 #include <QGuiApplication>
 #include <QScreen>
 #include <QTimer>
+
+#include <X11/Xlib.h>
 
 #include <algorithm>
 #include <chrono>
@@ -60,6 +63,47 @@ constexpr int32_t kGeometryTolerancePx = 2;
 
 bool nearlyEqual(int64_t a, int64_t b) {
   return std::abs(a - b) <= kGeometryTolerancePx;
+}
+
+/*
+ * QCursor::pos() is not a global pointer query under a Wayland session: Qt
+ * only updates it from pointer events delivered to its own windows, so it
+ * freezes as soon as the pointer moves over another application.  Wallpaper
+ * Engine runs under XWayland and reads its cursor through Wine, so feed it
+ * the same XWayland root coordinates instead.
+ */
+bool queryXwaylandCursor(int32_t &x, int32_t &y) {
+  static Display *display = XOpenDisplay(nullptr);
+  static bool logged = false;
+  if (!display) {
+    if (!logged) {
+      qWarning() << "[cursor] XOpenDisplay failed, using QCursor::pos()";
+      logged = true;
+    }
+    return false;
+  }
+
+  Window root = DefaultRootWindow(display);
+  Window child = None;
+  int rootX = 0;
+  int rootY = 0;
+  int childX = 0;
+  int childY = 0;
+  unsigned int mask = 0;
+  if (!XQueryPointer(display, root, &root, &child, &rootX, &rootY, &childX,
+                     &childY, &mask)) {
+    return false;
+  }
+
+  x = static_cast<int32_t>(rootX);
+  y = static_cast<int32_t>(rootY);
+  if (!logged) {
+    const QPoint qt = QCursor::pos();
+    qInfo() << "[cursor] using XWayland root pointer" << x << y
+            << "(QCursor::pos was" << qt.x() << qt.y() << ")";
+    logged = true;
+  }
+  return true;
 }
 
 /*
@@ -177,13 +221,35 @@ CaptureCoordinator::CaptureCoordinator(QObject *parent)
 
   m_cursorTimer->setInterval(kCursorSampleIntervalMs);
   connect(m_cursorTimer, &QTimer::timeout, this, [this]() {
-    QPoint pos = QCursor::pos();
+    if (m_wallpaperCursorActive.load()) {
+      return;
+    }
+    int32_t x = 0;
+    int32_t y = 0;
+    if (queryXwaylandCursor(x, y)) {
+      m_cursorX = x;
+      m_cursorY = y;
+      return;
+    }
+    const QPoint pos = QCursor::pos();
     m_cursorX = pos.x();
     m_cursorY = pos.y();
   });
+
+  m_nativeWindowWatcher = new NativeWindowWatcher(this, this);
 }
 
 CaptureCoordinator::~CaptureCoordinator() { teardownSockets(); }
+
+void CaptureCoordinator::setWallpaperCursor(int32_t x, int32_t y) {
+  m_cursorX = x;
+  m_cursorY = y;
+  m_wallpaperCursorActive = true;
+}
+
+void CaptureCoordinator::clearWallpaperCursor() {
+  m_wallpaperCursorActive = false;
+}
 
 void CaptureCoordinator::registerItem(WallpaperCaptureItem *item) {
   if (!item ||
@@ -246,6 +312,21 @@ void CaptureCoordinator::reevaluateActiveItem() {
 WallpaperCaptureItem *CaptureCoordinator::channelItem(uint32_t channel) const {
   auto it = m_channelItems.find(channel);
   return it == m_channelItems.end() ? nullptr : it->second;
+}
+
+std::optional<uint32_t>
+CaptureCoordinator::channelForScreen(const QScreen *screen) const {
+  if (!screen) {
+    return std::nullopt;
+  }
+  for (const auto &[channel, item] : m_channelItems) {
+    QScreen *itemScreen =
+        item && item->window() ? item->window()->screen() : nullptr;
+    if (itemScreen == screen) {
+      return channel;
+    }
+  }
+  return std::nullopt;
 }
 
 WallpaperCaptureItem *
